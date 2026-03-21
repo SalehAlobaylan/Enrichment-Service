@@ -1,0 +1,17 @@
+services:
+  enrichment:
+    build: .
+    ports:
+      - "5050:5050"
+    env_file:
+      - .env
+    environment:
+      - ENV=development
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
+    mem_limit: 4g
+    deploy:
+      resources:
+        limits:
+          memory: 4G

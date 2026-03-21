@@ -1,0 +1,3 @@
+This is a sample text file for testing embedding and summarization endpoints.
+It contains multiple sentences to provide enough content for meaningful processing.
+The quick brown fox jumps over the lazy dog. This pangram is commonly used in testing.
