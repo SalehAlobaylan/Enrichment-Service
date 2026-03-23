@@ -27,8 +27,8 @@ env/
 .DS_Store
 Thumbs.db
 
-# Models (downloaded at build time)
-models/
+# Models (downloaded at build time) - only top-level models dir, not src/models/
+/models/
 
 # Temp files
 tmp/

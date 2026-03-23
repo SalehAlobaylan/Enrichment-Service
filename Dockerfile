@@ -44,12 +44,12 @@ COPY src/ src/
 COPY scripts/ scripts/
 
 ENV MODELS_DIR=/app/models
-ENV PORT=5050
+ENV PORT=3000
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-EXPOSE 5050
+EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD sh scripts/healthcheck.sh
 
-CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "5050"]
+CMD sh -c "python -m uvicorn src.main:app --host 0.0.0.0 --port ${PORT}"
