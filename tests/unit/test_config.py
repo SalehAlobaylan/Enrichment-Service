@@ -19,8 +19,33 @@ def test_defaults() -> None:
 
 
 def test_is_production() -> None:
-    s = Settings(ENV="production", SERVICE_AUTH_TOKEN="t", CMS_SERVICE_TOKEN="c", CMS_BASE_URL="x")
+    s = Settings(
+        ENV="production",
+        SERVICE_AUTH_TOKEN="t",
+        CMS_SERVICE_TOKEN="c",
+        CMS_BASE_URL="x",
+    )
     assert s.is_production is True
 
-    s2 = Settings(ENV="development", SERVICE_AUTH_TOKEN="t", CMS_SERVICE_TOKEN="c", CMS_BASE_URL="x")
+    s2 = Settings(
+        ENV="development",
+        SERVICE_AUTH_TOKEN="t",
+        CMS_SERVICE_TOKEN="c",
+        CMS_BASE_URL="x",
+    )
     assert s2.is_production is False
+
+
+def test_service_auth_token_fallbacks() -> None:
+    s = Settings(
+        ENRICHMENT_SERVICE_TOKEN="enrichment-token",
+        CMS_SERVICE_TOKEN="cms-token",
+        CMS_BASE_URL="x",
+    )
+    assert s.service_auth_token == "enrichment-token"
+
+    s2 = Settings(
+        CMS_SERVICE_TOKEN="cms-token",
+        CMS_BASE_URL="x",
+    )
+    assert s2.service_auth_token == "cms-token"

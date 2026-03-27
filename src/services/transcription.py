@@ -72,7 +72,9 @@ class TranscriptionService:
 
     async def _write_back(self, content_id: str, result: TranscribeResponse) -> None:
         try:
-            segments_data = [seg.model_dump() for seg in result.segments] if result.segments else None
+            segments_data = [seg.model_dump() for seg in result.segments]
+            if not segments_data:
+                segments_data = None
 
             transcript = await self.cms_client.create_transcript(
                 content_item_id=content_id,

@@ -12,20 +12,28 @@ logger = get_logger(__name__)
 
 class CMSClient:
     def __init__(self, settings: Settings):
-        self.base_url = settings.CMS_BASE_URL.rstrip("/")
+        raw_base_url = settings.CMS_BASE_URL.rstrip("/")
+        self.base_url = raw_base_url
+        self.public_base_url = (
+            raw_base_url.removesuffix("/internal")
+            if raw_base_url.endswith("/internal")
+            else raw_base_url
+        )
         self.token = settings.CMS_SERVICE_TOKEN
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=settings.CB_FAILURE_THRESHOLD,
             reset_timeout_sec=settings.CB_RESET_TIMEOUT_SEC,
             half_open_requests=settings.CB_HALF_OPEN_REQUESTS,
         )
+        headers = {
+            "Content-Type": "application/json",
+            "X-Service-Name": "enrichment-service",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         self.client = httpx.AsyncClient(
             timeout=settings.CMS_REQUEST_TIMEOUT_SEC,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.token}",
-                "X-Service-Name": "enrichment-service",
-            },
+            headers=headers,
         )
 
     async def close(self) -> None:
@@ -33,7 +41,7 @@ class CMSClient:
 
     async def health_check(self) -> bool:
         try:
-            resp = await self.client.get(f"{self.base_url}/health")
+            resp = await self.client.get(f"{self.public_base_url}/health")
             return resp.status_code == 200
         except httpx.HTTPError:
             return False
@@ -116,7 +124,7 @@ class CMSClient:
         metric_label: str = "unknown",
     ) -> dict[str, Any]:
         async def _do_request() -> dict[str, Any]:
-            url = f"{self.base_url}{path}"
+            url = self._build_url(path)
             resp = await self.client.request(method, url, json=json)
             resp.raise_for_status()
             return resp.json()
@@ -134,3 +142,8 @@ class CMSClient:
                 error=str(exc),
             )
             raise
+
+    def _build_url(self, path: str) -> str:
+        if self.base_url.endswith("/internal") and path.startswith("/internal/"):
+            return f"{self.base_url}{path.removeprefix('/internal')}"
+        return f"{self.base_url}{path}"

@@ -76,11 +76,13 @@ class WhisperWrapper:
         full_text_parts = []
 
         for segment in segments_iter:
-            segments.append({
-                "start": round(segment.start, 3),
-                "end": round(segment.end, 3),
-                "text": segment.text.strip(),
-            })
+            segments.append(
+                {
+                    "start": round(segment.start, 3),
+                    "end": round(segment.end, 3),
+                    "text": segment.text.strip(),
+                }
+            )
             full_text_parts.append(segment.text.strip())
 
         full_text = " ".join(full_text_parts)

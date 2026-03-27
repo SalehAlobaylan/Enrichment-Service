@@ -14,3 +14,9 @@ def test_rejects_bad_token(client: TestClient) -> None:
 def test_accepts_valid_token(client: TestClient, auth_headers: dict[str, str]) -> None:
     resp = client.get("/v1/models", headers=auth_headers)
     assert resp.status_code == 200
+
+
+def test_accepts_cms_token_fallback(client: TestClient) -> None:
+    client.app.state.settings.SERVICE_AUTH_TOKEN = ""
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer test-cms-token"})
+    assert resp.status_code == 200

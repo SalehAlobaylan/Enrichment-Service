@@ -1,38 +1,67 @@
-.PHONY: dev install install-dev test lint format docker-build docker-up download-models
+.PHONY: dev run install install-dev test test-unit test-integration test-coverage lint format docker-build docker-up download-models ensure-venv ensure-runtime ensure-dev
 
-dev:
-	python -m uvicorn src.main:app --host 0.0.0.0 --port 5050 --reload
+PYTHON ?= python3
+VENV ?= .venv
+VENV_PYTHON := $(VENV)/bin/python
+VENV_PIP := $(VENV)/bin/pip
 
-install:
-	pip install -r requirements.txt
-	playwright install chromium
+ensure-venv:
+	@test -x "$(VENV_PYTHON)" || $(PYTHON) -m venv "$(VENV)"
 
-install-dev:
-	pip install -r requirements-dev.txt
-	playwright install chromium
+ensure-runtime: ensure-venv
+	@$(VENV_PYTHON) -c "import fastapi, uvicorn" >/dev/null 2>&1 || { \
+		$(VENV_PYTHON) -m pip install --upgrade pip && \
+		$(VENV_PIP) install -r requirements.txt && \
+		$(VENV_PYTHON) -m playwright install chromium; \
+	}
 
-test:
-	pytest tests/ -v
+ensure-dev: ensure-venv
+	@$(VENV_PYTHON) -c "import fastapi, uvicorn" >/dev/null 2>&1 || { \
+		$(VENV_PYTHON) -m pip install --upgrade pip && \
+		$(VENV_PIP) install -r requirements-dev.txt && \
+		$(VENV_PYTHON) -m playwright install chromium; \
+	}
+	@$(VENV_PYTHON) -m pytest --version >/dev/null 2>&1
+	@$(VENV_PYTHON) -m ruff --version >/dev/null 2>&1
 
-test-unit:
-	pytest tests/unit/ -v
+run: ensure-runtime
+	$(VENV_PYTHON) -m uvicorn src.main:app --host 0.0.0.0 --port $${PORT:-5050}
 
-test-integration:
-	pytest tests/integration/ -v
+dev: ensure-dev
+	$(VENV_PYTHON) -m uvicorn src.main:app --host 0.0.0.0 --port $${PORT:-5050} --reload
 
-test-coverage:
-	coverage run -m pytest tests/ -v
-	coverage report -m
-	coverage html
+install: ensure-venv
+	$(VENV_PYTHON) -m pip install --upgrade pip
+	$(VENV_PIP) install -r requirements.txt
+	$(VENV_PYTHON) -m playwright install chromium
 
-lint:
-	ruff check src/ tests/
+install-dev: ensure-venv
+	$(VENV_PYTHON) -m pip install --upgrade pip
+	$(VENV_PIP) install -r requirements-dev.txt
+	$(VENV_PYTHON) -m playwright install chromium
 
-format:
-	ruff format src/ tests/
+test: ensure-dev
+	$(VENV_PYTHON) -m pytest tests/ -v
 
-download-models:
-	python scripts/download_models.py
+test-unit: ensure-dev
+	$(VENV_PYTHON) -m pytest tests/unit/ -v
+
+test-integration: ensure-dev
+	$(VENV_PYTHON) -m pytest tests/integration/ -v
+
+test-coverage: ensure-dev
+	$(VENV_PYTHON) -m coverage run -m pytest tests/ -v
+	$(VENV_PYTHON) -m coverage report -m
+	$(VENV_PYTHON) -m coverage html
+
+lint: ensure-dev
+	$(VENV_PYTHON) -m ruff check src/ tests/
+
+format: ensure-dev
+	$(VENV_PYTHON) -m ruff format src/ tests/
+
+download-models: ensure-runtime
+	$(VENV_PYTHON) scripts/download_models.py
 
 docker-build:
 	docker build -t enrichment-service .

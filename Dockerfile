@@ -44,10 +44,10 @@ COPY src/ src/
 COPY scripts/ scripts/
 
 ENV MODELS_DIR=/app/models
-ENV PORT=3000
+ENV PORT=5050
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-EXPOSE 3000
+EXPOSE 5050
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD sh scripts/healthcheck.sh

@@ -29,9 +29,7 @@ def test_transcribe_file_upload(client: TestClient, auth_headers: dict[str, str]
     assert len(data["segments"]) == 1
 
 
-def test_transcribe_requires_file_or_url(
-    client: TestClient, auth_headers: dict[str, str]
-) -> None:
+def test_transcribe_requires_file_or_url(client: TestClient, auth_headers: dict[str, str]) -> None:
     resp = client.post("/v1/transcribe", headers=auth_headers)
     assert resp.status_code == 422
 

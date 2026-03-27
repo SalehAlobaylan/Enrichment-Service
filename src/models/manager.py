@@ -44,9 +44,7 @@ class ModelManager:
         whisper_task = loop.run_in_executor(self._executor, self.whisper.load)
         embedder_task = loop.run_in_executor(self._executor, self.embedder.load)
 
-        results = await asyncio.gather(
-            whisper_task, embedder_task, return_exceptions=True
-        )
+        results = await asyncio.gather(whisper_task, embedder_task, return_exceptions=True)
 
         for name, result in zip(["whisper", "embedder"], results):
             if isinstance(result, Exception):

@@ -8,12 +8,14 @@ from src.utils.metrics import translations_total
 
 logger = get_logger(__name__)
 
-SYSTEM_PROMPT = """You are a professional translator. Translate the given text to the target language.
+SYSTEM_PROMPT = """
+You are a professional translator. Translate the given text to the target language.
 Return ONLY a JSON object with these fields:
 - "translated_text": the translation
 - "source_language": ISO 639-1 code of the detected source language
 
-Do not include any other text or explanation."""
+Do not include any other text or explanation.
+""".strip()
 
 
 class TranslationService:
@@ -29,9 +31,7 @@ class TranslationService:
         content_id: str | None = None,
     ) -> TranslateResponse:
         source_hint = f" (source language: {source_language})" if source_language else ""
-        user_prompt = (
-            f"Translate the following text to {target_language}{source_hint}:\n\n{text}"
-        )
+        user_prompt = f"Translate the following text to {target_language}{source_hint}:\n\n{text}"
 
         raw = await self.llm.complete(SYSTEM_PROMPT, user_prompt, max_tokens=2048)
 

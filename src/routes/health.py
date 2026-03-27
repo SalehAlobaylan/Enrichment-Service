@@ -40,7 +40,11 @@ async def ready(request: Request, response: Response) -> ReadyResponse:
     )
 
 
-@router.get("/v1/models", response_model=ModelsResponse, dependencies=[Depends(verify_service_token)])
+@router.get(
+    "/v1/models",
+    response_model=ModelsResponse,
+    dependencies=[Depends(verify_service_token)],
+)
 async def models(request: Request) -> ModelsResponse:
     model_manager = request.app.state.model_manager
 
@@ -55,7 +59,9 @@ async def models(request: Request) -> ModelsResponse:
             name=model_manager.embedder.model_name,
             loaded=model_manager.embedder.is_loaded,
             type="sentence-transformer",
-            dimensions=model_manager.embedder.dimensions if model_manager.embedder.is_loaded else None,
+            dimensions=model_manager.embedder.dimensions
+            if model_manager.embedder.is_loaded
+            else None,
         ),
     ]
 

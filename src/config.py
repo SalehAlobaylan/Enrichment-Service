@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     # Auth
     SERVICE_AUTH_TOKEN: str = ""
+    ENRICHMENT_SERVICE_TOKEN: str = ""
     CMS_SERVICE_TOKEN: str = ""
     CMS_BASE_URL: str = "http://localhost:8080"
 
@@ -41,3 +42,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.ENV == "production"
+
+    @property
+    def service_auth_token(self) -> str:
+        return (
+            self.SERVICE_AUTH_TOKEN
+            or self.ENRICHMENT_SERVICE_TOKEN
+            or self.CMS_SERVICE_TOKEN
+        )
