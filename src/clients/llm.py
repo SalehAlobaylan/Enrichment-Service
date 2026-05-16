@@ -103,11 +103,29 @@ class LLMClient:
 
         # google-genai uses a single `contents` argument; the system prompt
         # is supplied via system_instruction in the generation config.
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            max_output_tokens=max_tokens,
-            temperature=temperature,
-        )
+        config_kwargs: dict = {
+            "system_instruction": system_prompt,
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        # Gemini 2.5+ models enable "thinking" by default, which silently
+        # eats the entire max_output_tokens budget on internal reasoning
+        # tokens before producing any visible text. For Wahb's workload
+        # (translation, short summaries) we don't need it — turn it off so
+        # the budget goes to actual output. Older models reject this field,
+        # so only set it when the model name implies 2.5 or newer.
+        model_name = (self.model or "").lower()
+        if any(tag in model_name for tag in ("2.5", "3.", "3-", "flash-latest", "pro-latest")):
+            try:
+                config_kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget=0
+                )
+            except AttributeError:
+                # Older SDK without ThinkingConfig — skip silently.
+                pass
+
+        config = types.GenerateContentConfig(**config_kwargs)
 
         # The SDK is synchronous — offload to a thread so the FastAPI event
         # loop stays responsive under concurrent translate/summarize calls.
