@@ -48,7 +48,9 @@ class TranscriptionService:
         )
 
         if content_id:
-            await self._write_back(content_id, response)
+            status, error = await self._write_back(content_id, response)
+            response.write_back_status = status
+            response.write_back_error = error
 
         return response
 
@@ -70,28 +72,52 @@ class TranscriptionService:
         finally:
             self._cleanup(audio_path)
 
-    async def _write_back(self, content_id: str, result: TranscribeResponse) -> None:
-        try:
-            segments_data = [seg.model_dump() for seg in result.segments]
-            if not segments_data:
-                segments_data = None
+    async def _write_back(
+        self, content_id: str, result: TranscribeResponse
+    ) -> tuple[str, str | None]:
+        """Persist transcript to CMS. Returns (status, error_message).
 
-            transcript = await self.cms_client.create_transcript(
-                content_item_id=content_id,
-                full_text=result.text,
-                language=result.language,
-                word_timestamps=segments_data,
-            )
-            transcript_id = transcript.get("id") or transcript.get("ID")
-            if transcript_id:
-                await self.cms_client.link_transcript(content_id, str(transcript_id))
-            logger.info("transcript_writeback_complete", content_id=content_id)
-        except Exception as exc:
-            logger.error(
-                "transcript_writeback_failed",
-                content_id=content_id,
-                error=str(exc),
-            )
+        Retries once on transient failure. Caller is expected to surface the
+        status to the API response so the orchestrator knows whether the
+        transcript was actually persisted.
+        """
+        segments_data = [seg.model_dump() for seg in result.segments]
+        if not segments_data:
+            segments_data = None
+
+        last_error: str | None = None
+        for attempt in range(2):
+            try:
+                transcript = await self.cms_client.create_transcript(
+                    content_item_id=content_id,
+                    full_text=result.text,
+                    language=result.language,
+                    word_timestamps=segments_data,
+                )
+                transcript_id = transcript.get("id") or transcript.get("ID")
+                if transcript_id:
+                    await self.cms_client.link_transcript(
+                        content_id, str(transcript_id)
+                    )
+                logger.info("transcript_writeback_complete", content_id=content_id)
+                return "ok", None
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(
+                    "transcript_writeback_attempt_failed",
+                    content_id=content_id,
+                    attempt=attempt + 1,
+                    error=last_error,
+                )
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+
+        logger.error(
+            "transcript_writeback_failed",
+            content_id=content_id,
+            error=last_error,
+        )
+        return "failed", last_error
 
     async def _download(self, url: str) -> str:
         async with httpx.AsyncClient(timeout=120) as client:

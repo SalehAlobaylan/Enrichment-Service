@@ -30,6 +30,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("starting", port=settings.PORT, env=settings.ENV)
 
+    config_errors, config_warnings = settings.validate_startup()
+    for warn in config_warnings:
+        logger.warning("config_warning", error=warn)
+    if config_errors:
+        for err in config_errors:
+            logger.error("config_invalid", error=err)
+        raise RuntimeError(
+            "Refusing to start: invalid configuration — "
+            + "; ".join(config_errors)
+        )
+
     model_manager = ModelManager(settings)
     cms_client = CMSClient(settings)
     llm_client = LLMClient(settings)

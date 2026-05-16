@@ -29,10 +29,12 @@ class Settings(BaseSettings):
     CB_HALF_OPEN_REQUESTS: int = 3
 
     # LLM
+    # Supported providers: "openai", "anthropic", "gemini", or "none"/"" to disable.
     LLM_PROVIDER: str = "openai"
     LLM_MODEL: str = "gpt-4o-mini"
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
 
     # Timeouts
     TRANSCRIBE_TIMEOUT_SEC: int = 600
@@ -50,3 +52,51 @@ class Settings(BaseSettings):
             or self.ENRICHMENT_SERVICE_TOKEN
             or self.CMS_SERVICE_TOKEN
         )
+
+    def validate_startup(self) -> tuple[list[str], list[str]]:
+        """Return (fatal_errors, warnings).
+
+        Production: missing LLM keys are fatal — translate/summarize would
+        crash on first call, better to fail fast at boot.
+        Dev/test: same issues are downgraded to warnings so local stacks
+        can boot without every operator owning an OpenAI key. The LLM
+        routes will return a clear error at call-time if the key is still
+        missing when used.
+        """
+        errors: list[str] = []
+        warnings: list[str] = []
+        provider = (self.LLM_PROVIDER or "").strip().lower()
+
+        def _missing_key(msg: str) -> None:
+            (errors if self.is_production else warnings).append(msg)
+
+        if provider == "openai":
+            if not self.OPENAI_API_KEY.strip():
+                _missing_key("LLM_PROVIDER=openai but OPENAI_API_KEY is empty")
+        elif provider == "anthropic":
+            if not self.ANTHROPIC_API_KEY.strip():
+                _missing_key(
+                    "LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty"
+                )
+        elif provider == "gemini":
+            if not self.GEMINI_API_KEY.strip():
+                _missing_key(
+                    "LLM_PROVIDER=gemini but GEMINI_API_KEY is empty"
+                )
+        elif provider in ("", "none", "disabled"):
+            pass
+        else:
+            # An unknown provider name is always fatal — it would silently
+            # break the entire LLM surface and is almost certainly a typo.
+            errors.append(
+                f"LLM_PROVIDER={self.LLM_PROVIDER!r} is not supported "
+                "(expected one of: openai, anthropic, gemini, none)"
+            )
+
+        if self.is_production and not self.service_auth_token:
+            errors.append(
+                "SERVICE_AUTH_TOKEN (or ENRICHMENT_SERVICE_TOKEN / "
+                "CMS_SERVICE_TOKEN) must be set in production"
+            )
+
+        return errors, warnings
