@@ -18,7 +18,7 @@ from src.middleware.error_handler import (
 from src.middleware.logging import LoggingMiddleware
 from src.middleware.request_id import RequestIDMiddleware
 from src.models.manager import ModelManager
-from src.routes import embed, extract, health, summarize, transcribe, translate
+from src.routes import admin, embed, extract, health, summarize, transcribe, translate
 from src.utils.logging import get_logger, setup_logging
 
 
@@ -80,6 +80,7 @@ app.include_router(embed.router, prefix="/v1")
 app.include_router(extract.router, prefix="/v1")
 app.include_router(translate.router, prefix="/v1")
 app.include_router(summarize.router, prefix="/v1")
+app.include_router(admin.router, prefix="/v1")
 
 # Error handlers
 for exc_class in (CircuitOpenError, TranscriptionError, ExtractionError, EmbeddingError, LLMError):
