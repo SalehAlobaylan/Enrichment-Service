@@ -26,17 +26,32 @@ def download_embedder(output_dir: str, model_name: str = "all-MiniLM-L6-v2") -> 
     print(f"Embedding model downloaded. Dimensions: {len(test[0])}")
 
 
+def download_clip(output_dir: str, model_name: str = "clip-ViT-B-32") -> None:
+    """Pre-cache CLIP image embedder for image_embedding endpoint."""
+    from PIL import Image
+    from sentence_transformers import SentenceTransformer
+
+    print(f"Downloading CLIP model: {model_name}")
+    model = SentenceTransformer(model_name, cache_folder=output_dir)
+    # Probe with a synthetic image to flush all weights to disk.
+    probe = Image.new("RGB", (224, 224), color="black")
+    test = model.encode([probe])
+    print(f"CLIP model downloaded. Dimensions: {len(test[0])}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download ML models")
     parser.add_argument("--output", default="./models", help="Output directory for models")
     parser.add_argument("--whisper-model", default="base", help="Whisper model size")
     parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="Embedding model")
+    parser.add_argument("--clip-model", default="clip-ViT-B-32", help="CLIP model")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
 
     download_whisper(args.output, args.whisper_model)
     download_embedder(args.output, args.embedding_model)
+    download_clip(args.output, args.clip_model)
 
     print(f"\nAll models downloaded to {args.output}")
 

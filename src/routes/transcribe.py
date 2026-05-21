@@ -1,20 +1,44 @@
 import os
 import tempfile
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from arq.jobs import Job
+from arq.jobs import JobStatus as ArqJobStatus
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
 from src.auth.service_auth import verify_service_token
 from src.middleware.error_handler import TranscriptionError
+from src.middleware.request_id import current_request_id
 from src.schemas.transcribe import TranscribeResponse
 from src.services.transcription import TranscriptionService
 from src.utils.logging import get_logger
-from src.utils.metrics import transcriptions_total
+from src.utils.metrics import transcribe_jobs_total, transcriptions_total
 
 logger = get_logger(__name__)
 router = APIRouter(dependencies=[Depends(verify_service_token)])
 
 TEMP_DIR = os.environ.get("MEDIA_TEMP_DIR", tempfile.gettempdir())
 UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+
+JobStatus = Literal["queued", "in_progress", "completed", "failed", "not_found"]
+
+
+class JobAcceptedResponse(BaseModel):
+    """Returned from POST /v1/transcribe/jobs (HTTP 202)."""
+
+    job_id: str
+    status: Literal["queued"] = "queued"
+
+
+class JobStatusResponse(BaseModel):
+    """Returned from GET /v1/transcribe/jobs/{id}."""
+
+    job_id: str
+    status: JobStatus
+    result: TranscribeResponse | None = None
+    error: str | None = None
 
 
 async def _spool_upload_to_disk(
@@ -102,3 +126,161 @@ async def transcribe(
         ).inc()
         logger.error("transcription_failed", error=str(exc))
         raise TranscriptionError(f"Transcription failed: {exc}") from exc
+
+
+# ─── Async transcription endpoints (#1) ─────────────────────────────────────
+
+
+def _persisted_upload_path(filename: str) -> str:
+    """Create a temp path the worker can read; the worker is responsible for unlink."""
+    suffix = os.path.splitext(filename)[1] or ".mp3"
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=TEMP_DIR, prefix="enrich_async_")
+    os.close(fd)
+    return tmp_path
+
+
+@router.post(
+    "/transcribe/jobs",
+    response_model=JobAcceptedResponse,
+    status_code=202,
+)
+async def submit_transcribe_job(
+    request: Request,
+    audio_file: UploadFile | None = File(None),
+    url: str | None = Form(None),
+    content_id: str | None = Form(None),
+    language: str | None = Form(None),
+    word_timestamps: bool = Form(False),
+) -> JobAcceptedResponse:
+    """Enqueue an async transcription job. Use for long-form (>2 min) audio.
+
+    The worker process (separate from this API) consumes from Redis and runs
+    the transcription. Poll GET /v1/transcribe/jobs/{id} for status.
+    """
+    settings = request.app.state.settings
+    arq_pool = request.app.state.arq_pool
+
+    if arq_pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Async transcription unavailable: Redis (arq) not reachable",
+        )
+
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+
+    # Same Content-Length gate as the sync route.
+    if audio_file is not None:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+            raise TranscriptionError(
+                f"Upload exceeds maximum size of {settings.MAX_UPLOAD_MB} MB"
+            )
+
+    audio_path: str | None = None
+    try:
+        if audio_file and audio_file.filename:
+            audio_path = _persisted_upload_path(audio_file.filename)
+            await _spool_upload_to_disk(audio_file, audio_path, max_bytes)
+        elif not url:
+            raise TranscriptionError("Provide either 'audio_file' or 'url'")
+
+        # Forward the current request_id into the job so the worker logs line
+        # up with this API call when debugging cross-process traces.
+        request_id = current_request_id()
+        job = await arq_pool.enqueue_job(
+            "transcribe_task",
+            audio_path,
+            url,
+            content_id,
+            language,
+            word_timestamps,
+            request_id,
+        )
+        if job is None:
+            raise TranscriptionError("Failed to enqueue transcription job")
+
+        transcribe_jobs_total.labels(state="queued").inc()
+        logger.info(
+            "transcribe_job_queued",
+            job_id=job.job_id,
+            content_id=content_id,
+            audio_path=audio_path,
+            url=url,
+        )
+        return JobAcceptedResponse(job_id=job.job_id)
+    except TranscriptionError:
+        # Spilled-to-disk file is now orphaned — clean up before raising.
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
+        raise
+
+
+@router.get("/transcribe/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_transcribe_job(job_id: str, request: Request) -> JobStatusResponse:
+    """Poll status / fetch result for an async transcription job."""
+    arq_pool = request.app.state.arq_pool
+    if arq_pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Async transcription unavailable: Redis (arq) not reachable",
+        )
+
+    job = Job(job_id, redis=arq_pool)
+    status = await job.status()
+
+    # Map arq's status enum to our public status string.
+    status_map: dict[ArqJobStatus, JobStatus] = {
+        ArqJobStatus.deferred: "queued",
+        ArqJobStatus.queued: "queued",
+        ArqJobStatus.in_progress: "in_progress",
+        ArqJobStatus.complete: "completed",
+        ArqJobStatus.not_found: "not_found",
+    }
+    public_status = status_map.get(status, "not_found")
+
+    if public_status == "not_found":
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    if public_status != "completed":
+        return JobStatusResponse(job_id=job_id, status=public_status)
+
+    # Completed — fetch the result. result_info() reads the worker's stored
+    # output; for failed jobs that's the exception, which can occasionally
+    # carry non-deserializable state. Don't let that bubble as a 500.
+    try:
+        info = await job.result_info()
+    except Exception as exc:
+        logger.warning(
+            "transcribe_job_result_unreadable",
+            job_id=job_id,
+            error=str(exc),
+        )
+        return JobStatusResponse(
+            job_id=job_id,
+            status="failed",
+            error=f"Job result could not be deserialized: {exc}",
+        )
+
+    if info is None:
+        return JobStatusResponse(job_id=job_id, status="completed")
+
+    if info.success:
+        payload: dict[str, Any] = info.result if isinstance(info.result, dict) else {}
+        try:
+            response = TranscribeResponse.model_validate(payload)
+            return JobStatusResponse(job_id=job_id, status="completed", result=response)
+        except Exception as exc:
+            return JobStatusResponse(
+                job_id=job_id,
+                status="failed",
+                error=f"Result deserialization failed: {exc}",
+            )
+    else:
+        return JobStatusResponse(
+            job_id=job_id,
+            status="failed",
+            error=str(info.result) if info.result else "Job failed",
+        )

@@ -61,6 +61,44 @@ llm_retries_total = Counter(
     ["provider", "operation"],
 )
 
+llm_fallback_invocations_total = Counter(
+    "enrichment_llm_fallback_invocations_total",
+    "LLM fallback invocations — when the primary provider failed and a "
+    "secondary provider was tried.",
+    ["from_provider", "to_provider", "operation"],
+)
+
+llm_cache_hits_total = Counter(
+    "enrichment_llm_cache_hits_total",
+    "LLM response-cache hits (a redis hit bypassed the upstream call).",
+    ["provider", "operation"],
+)
+
+llm_cache_misses_total = Counter(
+    "enrichment_llm_cache_misses_total",
+    "LLM response-cache misses (upstream provider was called).",
+    ["provider", "operation"],
+)
+
+tag_extractions_total = Counter(
+    "enrichment_tag_extractions_total",
+    "Topic tag extraction outcomes "
+    "(status: success | skipped_short | llm_failed | parse_failed).",
+    ["status"],
+)
+
+transcribe_jobs_total = Counter(
+    "enrichment_transcribe_jobs_total",
+    "Async transcription jobs by state (queued | started | completed | failed).",
+    ["state"],
+)
+
+image_embeddings_total = Counter(
+    "enrichment_image_embeddings_total",
+    "Total CLIP image embedding requests",
+    ["status"],
+)
+
 llm_request_duration = Histogram(
     "enrichment_llm_request_duration_seconds",
     "LLM API request duration",

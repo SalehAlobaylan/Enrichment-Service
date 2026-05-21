@@ -63,6 +63,14 @@ async def models(request: Request) -> ModelsResponse:
             if model_manager.embedder.is_loaded
             else None,
         ),
+        ModelInfoItem(
+            name=model_manager.clip.model_name,
+            loaded=model_manager.clip.is_loaded,
+            type="clip",
+            dimensions=model_manager.clip.dimensions
+            if model_manager.clip.is_loaded
+            else None,
+        ),
     ]
 
     return ModelsResponse(models=items)

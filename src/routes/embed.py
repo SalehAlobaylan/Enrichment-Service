@@ -4,6 +4,7 @@ from src.auth.service_auth import verify_service_token
 from src.middleware.error_handler import EmbeddingError
 from src.schemas.embed import EmbedQueryRequest, EmbedQueryResponse, EmbedRequest, EmbedResponse
 from src.services.embedding import EmbeddingService
+from src.services.tagging import TaggingService
 from src.utils.logging import get_logger
 from src.utils.metrics import embeddings_total
 
@@ -15,7 +16,9 @@ router = APIRouter(dependencies=[Depends(verify_service_token)])
 async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
     model_manager = request.app.state.model_manager
     cms_client = request.app.state.cms_client
-    service = EmbeddingService(model_manager.embedder, cms_client)
+    llm_client = request.app.state.llm_client
+    tagger = TaggingService(llm_client) if body.extract_tags else None
+    service = EmbeddingService(model_manager.embedder, cms_client, tagger=tagger)
 
     if not model_manager.embedder.is_loaded:
         raise EmbeddingError("Embedding model is not loaded")
@@ -24,7 +27,11 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
         raise EmbeddingError("content_ids length must match texts length")
 
     try:
-        return await service.embed(body.texts, content_ids=body.content_ids)
+        return await service.embed(
+            body.texts,
+            content_ids=body.content_ids,
+            extract_tags=body.extract_tags,
+        )
     except EmbeddingError:
         raise
     except Exception as exc:

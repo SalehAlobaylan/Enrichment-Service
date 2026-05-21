@@ -93,6 +93,19 @@ class CMSClient:
             metric_label="store_embedding",
         )
 
+    async def store_image_embedding(
+        self,
+        content_id: str,
+        embedding: list[float],
+    ) -> dict[str, Any]:
+        """Persist a 512-dim CLIP image embedding to content_items.image_embedding."""
+        return await self._request(
+            "PATCH",
+            f"/internal/content-items/{content_id}/image-embedding",
+            json={"embedding": embedding},
+            metric_label="store_image_embedding",
+        )
+
     async def update_content(self, content_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
         return await self._request(
             "PUT",

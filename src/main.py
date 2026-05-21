@@ -7,6 +7,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from src.clients.cms import CMSClient
 from src.clients.llm import LLMClient
+from src.clients.llm_cache import LLMCache
 from src.config import Settings
 from src.middleware.error_handler import (
     CircuitOpenError,
@@ -19,7 +20,16 @@ from src.middleware.error_handler import (
 from src.middleware.logging import LoggingMiddleware
 from src.middleware.request_id import RequestIDMiddleware
 from src.models.manager import ModelManager
-from src.routes import admin, embed, extract, health, summarize, transcribe, translate
+from src.routes import (
+    admin,
+    embed,
+    embed_image,
+    extract,
+    health,
+    summarize,
+    transcribe,
+    translate,
+)
 from src.utils.logging import get_logger, setup_logging
 
 
@@ -44,7 +54,53 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     model_manager = ModelManager(settings)
     cms_client = CMSClient(settings)
-    llm_client = LLMClient(settings)
+
+    # Redis-backed LLM response cache. A flaky/missing Redis must NOT block
+    # boot — the cache layer treats every Redis exception as a miss.
+    llm_cache: LLMCache | None = None
+    redis_llm = None
+    if settings.LLM_CACHE_ENABLED:
+        try:
+            from redis.asyncio import Redis
+
+            redis_llm = Redis.from_url(
+                settings.REDIS_URL,
+                db=settings.LLM_CACHE_DB,
+                decode_responses=False,
+            )
+            await redis_llm.ping()
+            llm_cache = LLMCache(redis_llm, default_ttl_sec=settings.LLM_CACHE_TTL_SEC)
+            logger.info(
+                "llm_cache_ready",
+                redis_url=settings.REDIS_URL,
+                db=settings.LLM_CACHE_DB,
+            )
+        except Exception as exc:
+            logger.warning(
+                "llm_cache_disabled",
+                reason=str(exc),
+                hint="Verify REDIS_URL; cache is a perf win, not required for correctness",
+            )
+
+    llm_client = LLMClient(settings, cache=llm_cache)
+
+    # arq pool for enqueueing async transcription jobs (#1). Same Redis,
+    # different logical DB. The API only enqueues; a separate `arq` worker
+    # process executes the jobs.
+    arq_pool = None
+    try:
+        from arq import create_pool
+
+        from src.worker import _build_redis_settings
+
+        arq_pool = await create_pool(_build_redis_settings())
+        logger.info("arq_pool_ready", db=settings.ARQ_REDIS_DB)
+    except Exception as exc:
+        logger.warning(
+            "arq_pool_disabled",
+            reason=str(exc),
+            hint="Async transcription endpoints will return 503 until Redis is reachable",
+        )
 
     await model_manager.warmup()
 
@@ -52,11 +108,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.model_manager = model_manager
     app.state.cms_client = cms_client
     app.state.llm_client = llm_client
+    app.state.redis_llm = redis_llm
+    app.state.arq_pool = arq_pool
 
     logger.info("ready", models=model_manager.is_ready)
     yield
 
     await cms_client.close()
+    if redis_llm is not None:
+        try:
+            await redis_llm.aclose()
+        except Exception:
+            pass
+    if arq_pool is not None:
+        try:
+            await arq_pool.aclose()
+        except Exception:
+            pass
     logger.info("shutdown_complete")
 
 
@@ -94,6 +162,7 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 app.include_router(health.router)
 app.include_router(transcribe.router, prefix="/v1")
 app.include_router(embed.router, prefix="/v1")
+app.include_router(embed_image.router, prefix="/v1")
 app.include_router(extract.router, prefix="/v1")
 app.include_router(translate.router, prefix="/v1")
 app.include_router(summarize.router, prefix="/v1")

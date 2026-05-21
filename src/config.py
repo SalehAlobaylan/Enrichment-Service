@@ -35,11 +35,30 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    # Optional fallback providers (CSV), tried in order when the primary
+    # provider exhausts its retries on a retryable error. Each named provider
+    # must have its API key set.
+    LLM_FALLBACK_PROVIDERS: str = ""
+    # Per-provider model overrides (used when a fallback fires). If unset for
+    # a given provider, falls back to provider-default sensible model.
+    LLM_OPENAI_MODEL: str = ""
+    LLM_ANTHROPIC_MODEL: str = ""
+    LLM_GEMINI_MODEL: str = ""
 
     # Timeouts
     TRANSCRIBE_TIMEOUT_SEC: int = 600
     EXTRACT_TIMEOUT_SEC: int = 30
     CMS_REQUEST_TIMEOUT_SEC: int = 10
+
+    # Redis — shared by LLM cache (#3) and arq async-transcribe queue (#1).
+    # Each consumer uses a different logical DB so flushes don't cross.
+    REDIS_URL: str = "redis://localhost:6379"
+    LLM_CACHE_DB: int = 1
+    ARQ_REDIS_DB: int = 2
+
+    # LLM response cache (#3).
+    LLM_CACHE_ENABLED: bool = True
+    LLM_CACHE_TTL_SEC: int = 604800  # 7 days
 
     # Upload limits
     MAX_UPLOAD_MB: int = 200  # podcasts can be ~150 MB; cap above that
@@ -59,6 +78,30 @@ class Settings(BaseSettings):
             or self.ENRICHMENT_SERVICE_TOKEN
             or self.CMS_SERVICE_TOKEN
         )
+
+    @property
+    def fallback_providers(self) -> list[str]:
+        """Parsed LLM_FALLBACK_PROVIDERS as a clean ordered list."""
+        return [
+            p.strip().lower()
+            for p in (self.LLM_FALLBACK_PROVIDERS or "").split(",")
+            if p.strip()
+        ]
+
+    def model_for(self, provider: str) -> str:
+        """Resolve which model name to use for a given provider.
+
+        Per-provider override env vars (LLM_OPENAI_MODEL etc.) win when set;
+        otherwise fall back to LLM_MODEL (which is the model name the operator
+        configured for the primary provider).
+        """
+        override_map = {
+            "openai": self.LLM_OPENAI_MODEL,
+            "anthropic": self.LLM_ANTHROPIC_MODEL,
+            "gemini": self.LLM_GEMINI_MODEL,
+        }
+        override = (override_map.get(provider) or "").strip()
+        return override or self.LLM_MODEL
 
     def validate_startup(self) -> tuple[list[str], list[str]]:
         """Return (fatal_errors, warnings).
@@ -99,6 +142,32 @@ class Settings(BaseSettings):
                 f"LLM_PROVIDER={self.LLM_PROVIDER!r} is not supported "
                 "(expected one of: openai, anthropic, gemini, none)"
             )
+
+        # Validate fallback chain — each named provider must have its API key
+        # set, and the primary should not appear in the fallback list (cycles
+        # and self-references are almost certainly a misconfiguration).
+        _provider_keys = {
+            "openai": self.OPENAI_API_KEY,
+            "anthropic": self.ANTHROPIC_API_KEY,
+            "gemini": self.GEMINI_API_KEY,
+        }
+        for fp in self.fallback_providers:
+            if fp == provider:
+                errors.append(
+                    f"LLM_FALLBACK_PROVIDERS contains {fp!r}, which is also the primary "
+                    "provider — fallback list must exclude the primary"
+                )
+                continue
+            if fp not in _provider_keys:
+                errors.append(
+                    f"LLM_FALLBACK_PROVIDERS contains unsupported provider {fp!r} "
+                    "(expected: openai, anthropic, gemini)"
+                )
+                continue
+            if not _provider_keys[fp].strip():
+                _missing_key(
+                    f"LLM_FALLBACK_PROVIDERS includes {fp!r} but its API key is empty"
+                )
 
         if self.is_production and not self.service_auth_token:
             errors.append(

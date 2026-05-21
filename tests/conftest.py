@@ -23,7 +23,7 @@ def test_settings() -> Settings:
 @pytest.fixture
 def mock_model_manager() -> MagicMock:
     manager = MagicMock()
-    manager.is_ready = {"whisper": True, "embedder": True}
+    manager.is_ready = {"whisper": True, "embedder": True, "clip": True}
     manager.all_ready = True
 
     # Whisper mock
@@ -34,6 +34,11 @@ def mock_model_manager() -> MagicMock:
     manager.embedder.is_loaded = True
     manager.embedder.model_name = "all-MiniLM-L6-v2"
     manager.embedder.dimensions = 384
+
+    # CLIP mock (added in Phase 3 #5)
+    manager.clip.is_loaded = True
+    manager.clip.model_name = "clip-ViT-B-32"
+    manager.clip.dimensions = 512
 
     return manager
 
