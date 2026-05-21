@@ -1,7 +1,7 @@
 # ─── Stage 1: Download ML models ──────────────────────────────
 FROM python:3.11-slim AS model-downloader
 
-RUN pip install --no-cache-dir faster-whisper sentence-transformers
+RUN pip install --no-cache-dir faster-whisper sentence-transformers pillow
 
 COPY scripts/download_models.py /tmp/download_models.py
 RUN python /tmp/download_models.py --output /models
