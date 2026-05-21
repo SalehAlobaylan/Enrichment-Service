@@ -31,7 +31,9 @@ class EmbeddingService:
         )
 
         if content_ids:
-            await self._write_back(content_ids, vectors)
+            status, error = await self._write_back(content_ids, vectors)
+            response.write_back_status = status
+            response.write_back_error = error
 
         return response
 
@@ -44,14 +46,29 @@ class EmbeddingService:
             dimensions=self.embedder.dimensions,
         )
 
-    async def _write_back(self, content_ids: list[str], vectors: list[list[float]]) -> None:
+    async def _write_back(
+        self, content_ids: list[str], vectors: list[list[float]]
+    ) -> tuple[str, str | None]:
+        """Write each (content_id, vector) to CMS. Returns (status, first_error).
+
+        status is "ok" only if every write succeeded; "failed" if any did. We
+        still attempt every write so partial successes get persisted — the
+        returned error string is the first failure encountered, which is
+        enough to alert callers without flooding the response.
+        """
+        first_error: str | None = None
         for content_id, vector in zip(content_ids, vectors):
             try:
                 await self.cms_client.store_embedding(content_id, vector)
                 logger.info("embedding_writeback_complete", content_id=content_id)
             except Exception as exc:
+                err = str(exc)
                 logger.error(
                     "embedding_writeback_failed",
                     content_id=content_id,
-                    error=str(exc),
+                    error=err,
                 )
+                if first_error is None:
+                    first_error = err
+
+        return ("failed", first_error) if first_error else ("ok", None)

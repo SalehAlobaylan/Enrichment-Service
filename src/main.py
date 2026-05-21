@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from src.clients.cms import CMSClient
@@ -65,6 +66,22 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# CORS — read from env at import time. Defaults are dev-friendly; production
+# operators must set CORS_ALLOWED_ORIGINS explicitly (e.g. to the Platform
+# Console + Wahb-Platform origins) or to "" to disable.
+_cors_setting = Settings()
+_cors_origins = [
+    o.strip() for o in (_cors_setting.CORS_ALLOWED_ORIGINS or "").split(",") if o.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        allow_credentials=False,
+    )
 
 # Middleware (order matters — outermost first)
 app.add_middleware(LoggingMiddleware)

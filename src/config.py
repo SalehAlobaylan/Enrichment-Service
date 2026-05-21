@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     EXTRACT_TIMEOUT_SEC: int = 30
     CMS_REQUEST_TIMEOUT_SEC: int = 10
 
+    # Upload limits
+    MAX_UPLOAD_MB: int = 200  # podcasts can be ~150 MB; cap above that
+
+    # CORS — CSV of allowed origins. Empty string disables CORS in prod;
+    # default is wide-open in dev for convenience.
+    CORS_ALLOWED_ORIGINS: str = "*"
+
     @property
     def is_production(self) -> bool:
         return self.ENV == "production"

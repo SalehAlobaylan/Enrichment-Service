@@ -4,6 +4,7 @@ import httpx
 
 from src.clients.circuit_breaker import CircuitBreaker
 from src.config import Settings
+from src.middleware.request_id import current_request_id
 from src.utils.logging import get_logger
 from src.utils.metrics import cms_writeback_total
 
@@ -125,7 +126,9 @@ class CMSClient:
     ) -> dict[str, Any]:
         async def _do_request() -> dict[str, Any]:
             url = self._build_url(path)
-            resp = await self.client.request(method, url, json=json)
+            request_id = current_request_id()
+            headers = {"X-Request-ID": request_id} if request_id else None
+            resp = await self.client.request(method, url, json=json, headers=headers)
             resp.raise_for_status()
             return resp.json()
 

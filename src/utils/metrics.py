@@ -49,6 +49,31 @@ summarizations_total = Counter(
     ["status"],
 )
 
+llm_requests_total = Counter(
+    "enrichment_llm_requests_total",
+    "LLM API request outcomes (status: success|failure). One increment per request.",
+    ["provider", "operation", "status"],
+)
+
+llm_retries_total = Counter(
+    "enrichment_llm_retries_total",
+    "LLM retry attempts (separate from request outcome counter). One increment per retry.",
+    ["provider", "operation"],
+)
+
+llm_request_duration = Histogram(
+    "enrichment_llm_request_duration_seconds",
+    "LLM API request duration",
+    ["provider", "operation"],
+    buckets=[0.5, 1, 2, 5, 10, 20, 30, 60],
+)
+
+llm_errors_total = Counter(
+    "enrichment_llm_errors_total",
+    "LLM API errors by provider and error class",
+    ["provider", "error_type"],
+)
+
 cms_writeback_total = Counter(
     "enrichment_cms_writeback_total",
     "CMS write-back attempts",

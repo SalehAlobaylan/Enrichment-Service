@@ -14,6 +14,26 @@ logger = get_logger(__name__)
 router = APIRouter(dependencies=[Depends(verify_service_token)])
 
 TEMP_DIR = os.environ.get("MEDIA_TEMP_DIR", tempfile.gettempdir())
+UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
+
+
+async def _spool_upload_to_disk(
+    upload: UploadFile, tmp_path: str, max_bytes: int
+) -> int:
+    """Stream upload to disk; abort if it exceeds max_bytes. Returns bytes written."""
+    written = 0
+    with open(tmp_path, "wb") as f:
+        while True:
+            chunk = await upload.read(UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                raise TranscriptionError(
+                    f"Upload exceeds maximum size of {max_bytes // (1024 * 1024)} MB"
+                )
+            f.write(chunk)
+    return written
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)
@@ -25,21 +45,31 @@ async def transcribe(
     language: str | None = Form(None),
     word_timestamps: bool = Form(False),
 ) -> TranscribeResponse:
+    settings = request.app.state.settings
     model_manager = request.app.state.model_manager
     cms_client = request.app.state.cms_client
     service = TranscriptionService(model_manager.whisper, cms_client)
 
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+
     if not model_manager.whisper.is_loaded:
         raise TranscriptionError("Whisper model is not loaded")
+
+    # Fast path: reject oversize uploads via Content-Length before streaming.
+    if audio_file is not None:
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+            raise TranscriptionError(
+                f"Upload exceeds maximum size of {settings.MAX_UPLOAD_MB} MB"
+            )
 
     try:
         if audio_file and audio_file.filename:
             suffix = os.path.splitext(audio_file.filename)[1] or ".mp3"
             fd, tmp_path = tempfile.mkstemp(suffix=suffix, dir=TEMP_DIR)
+            os.close(fd)  # we'll reopen via _spool_upload_to_disk
             try:
-                with os.fdopen(fd, "wb") as f:
-                    content = await audio_file.read()
-                    f.write(content)
+                await _spool_upload_to_disk(audio_file, tmp_path, max_bytes)
 
                 return await service.transcribe_file(
                     tmp_path,

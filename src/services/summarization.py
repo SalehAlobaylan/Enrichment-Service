@@ -8,6 +8,16 @@ from src.utils.metrics import summarizations_total
 
 logger = get_logger(__name__)
 
+
+def _strip_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text[text.index("\n") + 1:] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[: text.rfind("```")]
+    return text.strip()
+
+
 SYSTEM_PROMPT = """You are a content summarizer. Summarize the given text.
 Return ONLY a JSON object with these fields:
 - "summary": a concise summary
@@ -33,9 +43,11 @@ class SummarizationService:
             f"Style: {style}.\n\n{text}"
         )
 
-        raw = await self.llm.complete(SYSTEM_PROMPT, user_prompt, max_tokens=1024)
+        raw = await self.llm.complete(
+            SYSTEM_PROMPT, user_prompt, max_tokens=1024, operation="summarize"
+        )
 
-        parsed = json.loads(raw)
+        parsed = json.loads(_strip_fences(raw))
 
         summarizations_total.labels(status="success").inc()
 

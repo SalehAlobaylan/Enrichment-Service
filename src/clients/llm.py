@@ -1,8 +1,69 @@
+import asyncio
+import random
+import time
+
 from src.config import Settings
 from src.middleware.error_handler import LLMError
+from src.middleware.request_id import current_request_id
 from src.utils.logging import get_logger
+from src.utils.metrics import (
+    llm_errors_total,
+    llm_request_duration,
+    llm_requests_total,
+    llm_retries_total,
+)
 
 logger = get_logger(__name__)
+
+# Retry policy — applied uniformly across providers.
+MAX_ATTEMPTS = 3
+BASE_BACKOFF_SEC = 1.0  # 1s, 2s, 4s with jitter
+
+
+def _classify_error(exc: Exception) -> tuple[str, bool]:
+    """Return (error_type, is_retryable) for an LLM SDK exception.
+
+    error_type values: rate_limit | timeout | auth | server | bad_request | other
+    """
+    name = type(exc).__name__
+    msg = str(exc).lower()
+
+    # Status-code aware paths (httpx, OpenAI, Anthropic all surface these names)
+    status: int | None = getattr(exc, "status_code", None)
+    if status is None:
+        # Some SDKs nest the status on a .response object
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            status = getattr(resp, "status_code", None)
+    if status is None:
+        # google-genai's ClientError / ServerError use `.code` for the HTTP status.
+        code = getattr(exc, "code", None)
+        if isinstance(code, int):
+            status = code
+
+    if status is not None:
+        if status == 429:
+            return "rate_limit", True
+        if status in (500, 502, 503, 504):
+            return "server", True
+        if status in (401, 403):
+            return "auth", False
+        if status == 400:
+            return "bad_request", False
+
+    # Name/string heuristics — covers SDKs that raise typed errors without status
+    if "RateLimit" in name or "rate_limit" in msg or "429" in msg:
+        return "rate_limit", True
+    if "Timeout" in name or "timeout" in msg or "timed out" in msg:
+        return "timeout", True
+    if "Authentication" in name or "PermissionDenied" in name or "Unauthorized" in name:
+        return "auth", False
+    if "Connection" in name or "APIConnection" in name:
+        return "server", True
+    if any(code in msg for code in ("500", "502", "503", "504")):
+        return "server", True
+
+    return "other", False
 
 
 class LLMClient:
@@ -35,35 +96,86 @@ class LLMClient:
         user_prompt: str,
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        operation: str = "complete",
     ) -> str:
-        try:
-            if self.provider == "openai" and self._openai_client:
-                return await self._openai_complete(
-                    system_prompt, user_prompt, max_tokens, temperature
+        provider = self.provider or "none"
+
+        # Resolve the per-provider call once so retry overhead is just the call.
+        if self.provider == "openai" and self._openai_client:
+            call = self._openai_complete
+        elif self.provider == "anthropic" and self._anthropic_client:
+            call = self._anthropic_complete
+        elif self.provider == "gemini" and self._gemini_client:
+            call = self._gemini_complete
+        else:
+            llm_errors_total.labels(provider=provider, error_type="auth").inc()
+            llm_requests_total.labels(
+                provider=provider, operation=operation, status="failure"
+            ).inc()
+            raise LLMError(
+                f"LLM provider '{self.provider}' is not configured. "
+                "Set the appropriate API key."
+            )
+
+        last_exc: Exception | None = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            start = time.perf_counter()
+            try:
+                result = await call(system_prompt, user_prompt, max_tokens, temperature)
+                llm_request_duration.labels(
+                    provider=provider, operation=operation
+                ).observe(time.perf_counter() - start)
+                llm_requests_total.labels(
+                    provider=provider, operation=operation, status="success"
+                ).inc()
+                return result
+            except LLMError:
+                # Empty response and other library-internal errors are not retryable.
+                llm_requests_total.labels(
+                    provider=provider, operation=operation, status="failure"
+                ).inc()
+                llm_errors_total.labels(
+                    provider=provider, error_type="empty_response"
+                ).inc()
+                raise
+            except Exception as exc:
+                last_exc = exc
+                error_type, retryable = _classify_error(exc)
+                llm_errors_total.labels(provider=provider, error_type=error_type).inc()
+                logger.warning(
+                    "llm_request_error",
+                    provider=provider,
+                    operation=operation,
+                    attempt=attempt,
+                    error_type=error_type,
+                    retryable=retryable,
+                    error=str(exc),
                 )
-            elif self.provider == "anthropic" and self._anthropic_client:
-                return await self._anthropic_complete(
-                    system_prompt, user_prompt, max_tokens, temperature
-                )
-            elif self.provider == "gemini" and self._gemini_client:
-                return await self._gemini_complete(
-                    system_prompt, user_prompt, max_tokens, temperature
-                )
-            else:
-                raise LLMError(
-                    f"LLM provider '{self.provider}' is not configured. "
-                    "Set the appropriate API key."
-                )
-        except LLMError:
-            raise
-        except Exception as exc:
-            logger.error("llm_request_failed", provider=self.provider, error=str(exc))
-            raise LLMError(f"LLM request failed: {exc}") from exc
+
+                if not retryable or attempt == MAX_ATTEMPTS:
+                    llm_requests_total.labels(
+                        provider=provider, operation=operation, status="failure"
+                    ).inc()
+                    raise LLMError(f"LLM request failed: {exc}") from exc
+
+                llm_retries_total.labels(provider=provider, operation=operation).inc()
+                backoff = BASE_BACKOFF_SEC * (2 ** (attempt - 1))
+                jitter = random.uniform(0, backoff * 0.25)
+                await asyncio.sleep(backoff + jitter)
+
+        # Defensive — loop exits via return or raise above.
+        raise LLMError(f"LLM request failed: {last_exc}")
+
+    @staticmethod
+    def _request_id_headers() -> dict[str, str]:
+        rid = current_request_id()
+        return {"X-Request-ID": rid} if rid else {}
 
     async def _openai_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
     ) -> str:
         assert self._openai_client is not None
+        extra_headers = self._request_id_headers() or None
         response = await self._openai_client.chat.completions.create(
             model=self.model,
             messages=[
@@ -72,6 +184,7 @@ class LLMClient:
             ],
             max_tokens=max_tokens,
             temperature=temperature,
+            extra_headers=extra_headers,
         )
         content = response.choices[0].message.content
         if not content:
@@ -82,12 +195,14 @@ class LLMClient:
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
     ) -> str:
         assert self._anthropic_client is not None
+        extra_headers = self._request_id_headers() or None
         response = await self._anthropic_client.messages.create(
             model=self.model,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
             max_tokens=max_tokens,
             temperature=temperature,
+            extra_headers=extra_headers,
         )
         if not response.content:
             raise LLMError("LLM returned empty response")
@@ -97,7 +212,6 @@ class LLMClient:
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
     ) -> str:
         assert self._gemini_client is not None
-        import asyncio
 
         from google.genai import types
 
@@ -107,6 +221,7 @@ class LLMClient:
             "system_instruction": system_prompt,
             "max_output_tokens": max_tokens,
             "temperature": temperature,
+            "response_mime_type": "application/json",
         }
 
         # Gemini 2.5+ models enable "thinking" by default, which silently
@@ -123,6 +238,17 @@ class LLMClient:
                 )
             except AttributeError:
                 # Older SDK without ThinkingConfig — skip silently.
+                pass
+
+        # Propagate X-Request-ID to Google API for cross-service tracing.
+        rid = current_request_id()
+        if rid:
+            try:
+                config_kwargs["http_options"] = types.HttpOptions(
+                    headers={"X-Request-ID": rid}
+                )
+            except (AttributeError, TypeError):
+                # Older SDK — skip header propagation silently.
                 pass
 
         config = types.GenerateContentConfig(**config_kwargs)

@@ -8,6 +8,16 @@ from src.utils.metrics import translations_total
 
 logger = get_logger(__name__)
 
+
+def _strip_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text[text.index("\n") + 1:] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[: text.rfind("```")]
+    return text.strip()
+
+
 SYSTEM_PROMPT = """
 You are a professional translator. Translate the given text to the target language.
 Return ONLY a JSON object with these fields:
@@ -33,9 +43,11 @@ class TranslationService:
         source_hint = f" (source language: {source_language})" if source_language else ""
         user_prompt = f"Translate the following text to {target_language}{source_hint}:\n\n{text}"
 
-        raw = await self.llm.complete(SYSTEM_PROMPT, user_prompt, max_tokens=2048)
+        raw = await self.llm.complete(
+            SYSTEM_PROMPT, user_prompt, max_tokens=2048, operation="translate"
+        )
 
-        parsed = json.loads(raw)
+        parsed = json.loads(_strip_fences(raw))
         detected_source = parsed.get("source_language", source_language or "unknown")
 
         translations_total.labels(status="success").inc()
