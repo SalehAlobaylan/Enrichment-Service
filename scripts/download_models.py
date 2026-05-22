@@ -28,15 +28,15 @@ def download_embedder(output_dir: str, model_name: str = "all-MiniLM-L6-v2") -> 
 
 def download_clip(output_dir: str, model_name: str = "clip-ViT-B-32") -> None:
     """Pre-cache CLIP image embedder for image_embedding endpoint."""
-    from PIL import Image
     from sentence_transformers import SentenceTransformer
 
     print(f"Downloading CLIP model: {model_name}")
     model = SentenceTransformer(model_name, cache_folder=output_dir)
-    # Probe with a synthetic image to flush all weights to disk.
-    probe = Image.new("RGB", (224, 224), color="black")
-    test = model.encode([probe])
-    print(f"CLIP model downloaded. Dimensions: {len(test[0])}")
+    get_dim = getattr(model, "get_sentence_embedding_dimension", None)
+    if callable(get_dim):
+        print(f"CLIP model downloaded. Dimensions: {get_dim()}")
+    else:
+        print("CLIP model downloaded.")
 
 
 def main() -> None:
