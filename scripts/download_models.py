@@ -1,4 +1,8 @@
-"""Pre-download ML models for Docker image build.
+"""Pre-download Enrichment-Service ML models for Docker image build.
+
+Whisper + CLIP have moved to Media-Service's download script. This now
+only pre-caches the text embedder. Slice 0 will add the BGE-M3 model
+and the reranker here.
 
 Usage:
     python scripts/download_models.py [--output /path/to/models]
@@ -8,52 +12,26 @@ import argparse
 import os
 
 
-def download_whisper(output_dir: str, model_size: str = "base") -> None:
-    from faster_whisper import WhisperModel
-
-    print(f"Downloading Whisper model: {model_size}")
-    WhisperModel(model_size, device="cpu", compute_type="int8", download_root=output_dir)
-    print(f"Whisper {model_size} downloaded to {output_dir}")
-
-
 def download_embedder(output_dir: str, model_name: str = "all-MiniLM-L6-v2") -> None:
     from sentence_transformers import SentenceTransformer
 
     print(f"Downloading embedding model: {model_name}")
     model = SentenceTransformer(model_name, cache_folder=output_dir)
-    # Verify it works
     test = model.encode(["test"])
     print(f"Embedding model downloaded. Dimensions: {len(test[0])}")
 
 
-def download_clip(output_dir: str, model_name: str = "clip-ViT-B-32") -> None:
-    """Pre-cache CLIP image embedder for image_embedding endpoint."""
-    from sentence_transformers import SentenceTransformer
-
-    print(f"Downloading CLIP model: {model_name}")
-    model = SentenceTransformer(model_name, cache_folder=output_dir)
-    get_dim = getattr(model, "get_sentence_embedding_dimension", None)
-    if callable(get_dim):
-        print(f"CLIP model downloaded. Dimensions: {get_dim()}")
-    else:
-        print("CLIP model downloaded.")
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Download ML models")
+    parser = argparse.ArgumentParser(description="Download Enrichment-Service ML models")
     parser.add_argument("--output", default="./models", help="Output directory for models")
-    parser.add_argument("--whisper-model", default="base", help="Whisper model size")
     parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="Embedding model")
-    parser.add_argument("--clip-model", default="clip-ViT-B-32", help="CLIP model")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
 
-    download_whisper(args.output, args.whisper_model)
     download_embedder(args.output, args.embedding_model)
-    download_clip(args.output, args.clip_model)
 
-    print(f"\nAll models downloaded to {args.output}")
+    print(f"\nAll Enrichment-Service models downloaded to {args.output}")
 
 
 if __name__ == "__main__":

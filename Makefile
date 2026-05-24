@@ -1,4 +1,4 @@
-.PHONY: dev run worker install install-dev test test-unit test-integration test-coverage lint format docker-build docker-up download-models ensure-venv ensure-runtime ensure-dev
+.PHONY: dev run install install-dev test test-unit test-integration test-coverage lint format docker-build docker-up download-models ensure-venv ensure-runtime ensure-dev
 
 PYTHON ?= python3
 VENV ?= .venv
@@ -29,9 +29,6 @@ run: ensure-runtime
 
 dev: ensure-dev
 	$(VENV_PYTHON) -m uvicorn src.main:app --host 0.0.0.0 --port $${PORT:-5050} --reload
-
-worker: ensure-runtime
-	$(VENV_PYTHON) -m arq src.worker.WorkerSettings
 
 install: ensure-venv
 	$(VENV_PYTHON) -m pip install --upgrade pip

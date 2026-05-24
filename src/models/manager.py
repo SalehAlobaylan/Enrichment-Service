@@ -1,10 +1,15 @@
+"""Model manager for Enrichment-Service.
+
+Loads the text embedder. Whisper transcription and CLIP image embedding
+have moved to Media-Service (their own dedicated service). The text
+embedder will be swapped to BGE-M3 in Slice 0; this manager will then
+also load the reranker.
+"""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from src.config import Settings
-from src.models.clip import CLIPWrapper
 from src.models.embedder import EmbedderWrapper
-from src.models.whisper import WhisperWrapper
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -13,52 +18,35 @@ logger = get_logger(__name__)
 class ModelManager:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        # Three concurrent loaders — Whisper, text embedder, CLIP. Sized to
-        # match the model count so cold start is bottlenecked on the slowest.
-        self._executor = ThreadPoolExecutor(max_workers=3)
+        # Single-loader executor for now. Slice 0 grows this to 2 (embedder
+        # + reranker) so cold start can be parallelized.
+        self._executor = ThreadPoolExecutor(max_workers=2)
 
-        self.whisper = WhisperWrapper(
-            model_size=settings.WHISPER_MODEL_SIZE,
-            device=settings.WHISPER_DEVICE,
-            compute_type=settings.WHISPER_COMPUTE_TYPE,
-            download_root=settings.MODELS_DIR,
-        )
         self.embedder = EmbedderWrapper(
             model_name=settings.EMBEDDING_MODEL,
             cache_folder=settings.MODELS_DIR,
         )
-        self.clip = CLIPWrapper(cache_folder=settings.MODELS_DIR)
 
     @property
     def is_ready(self) -> dict[str, bool]:
         return {
-            "whisper": self.whisper.is_loaded,
             "embedder": self.embedder.is_loaded,
-            "clip": self.clip.is_loaded,
         }
 
     @property
     def all_ready(self) -> bool:
-        return (
-            self.whisper.is_loaded
-            and self.embedder.is_loaded
-            and self.clip.is_loaded
-        )
+        return self.embedder.is_loaded
 
     async def warmup(self) -> None:
         loop = asyncio.get_event_loop()
 
         logger.info("loading_models")
 
-        whisper_task = loop.run_in_executor(self._executor, self.whisper.load)
         embedder_task = loop.run_in_executor(self._executor, self.embedder.load)
-        clip_task = loop.run_in_executor(self._executor, self.clip.load)
 
-        results = await asyncio.gather(
-            whisper_task, embedder_task, clip_task, return_exceptions=True
-        )
+        results = await asyncio.gather(embedder_task, return_exceptions=True)
 
-        for name, result in zip(["whisper", "embedder", "clip"], results):
+        for name, result in zip(["embedder"], results):
             if isinstance(result, Exception):
                 logger.error("model_load_failed", model=name, error=str(result))
             else:

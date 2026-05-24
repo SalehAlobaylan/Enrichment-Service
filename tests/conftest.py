@@ -22,23 +22,18 @@ def test_settings() -> Settings:
 
 @pytest.fixture
 def mock_model_manager() -> MagicMock:
-    manager = MagicMock()
-    manager.is_ready = {"whisper": True, "embedder": True, "clip": True}
-    manager.all_ready = True
+    """Mock for Enrichment-Service's ModelManager (text embedder only).
 
-    # Whisper mock
-    manager.whisper.is_loaded = True
-    manager.whisper.model_size = "base"
+    Whisper + CLIP mocks moved to Media-Service's conftest.
+    """
+    manager = MagicMock()
+    manager.is_ready = {"embedder": True}
+    manager.all_ready = True
 
     # Embedder mock
     manager.embedder.is_loaded = True
     manager.embedder.model_name = "all-MiniLM-L6-v2"
     manager.embedder.dimensions = 384
-
-    # CLIP mock (added in Phase 3 #5)
-    manager.clip.is_loaded = True
-    manager.clip.model_name = "clip-ViT-B-32"
-    manager.clip.dimensions = 512
 
     return manager
 
@@ -47,8 +42,6 @@ def mock_model_manager() -> MagicMock:
 def mock_cms_client() -> AsyncMock:
     client = AsyncMock(spec=CMSClient)
     client.health_check.return_value = True
-    client.create_transcript.return_value = {"id": "transcript-123"}
-    client.link_transcript.return_value = {"ok": True}
     client.store_embedding.return_value = {"ok": True}
     client.update_content.return_value = {"ok": True}
     return client

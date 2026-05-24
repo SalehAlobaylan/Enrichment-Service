@@ -2,7 +2,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-# Same values used by TranscribeResponse — see schemas/transcribe.py.
+# Same shape used by other write-back responses across the platform
+# (Media-Service's TranscribeResponse / ImageEmbedResponse use the same
+# three-value enum). Keep these aligned if the contract changes.
 WriteBackStatus = Literal["not_attempted", "ok", "failed"]
 
 

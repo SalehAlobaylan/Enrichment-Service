@@ -16,10 +16,7 @@ class Settings(BaseSettings):
     CMS_SERVICE_TOKEN: str = ""
     CMS_BASE_URL: str = "http://localhost:8080"
 
-    # Models
-    WHISPER_MODEL_SIZE: str = "base"
-    WHISPER_DEVICE: str = "cpu"
-    WHISPER_COMPUTE_TYPE: str = "int8"
+    # Models — text embedder only. Whisper + CLIP moved to Media-Service.
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     MODELS_DIR: str = "./models"
 
@@ -45,23 +42,18 @@ class Settings(BaseSettings):
     LLM_ANTHROPIC_MODEL: str = ""
     LLM_GEMINI_MODEL: str = ""
 
-    # Timeouts
-    TRANSCRIBE_TIMEOUT_SEC: int = 600
+    # Timeouts — TRANSCRIBE_TIMEOUT_SEC moved to Media-Service.
     EXTRACT_TIMEOUT_SEC: int = 30
     CMS_REQUEST_TIMEOUT_SEC: int = 10
 
-    # Redis — shared by LLM cache (#3) and arq async-transcribe queue (#1).
-    # Each consumer uses a different logical DB so flushes don't cross.
+    # Redis — LLM response cache. The arq queue and its DB live in
+    # Media-Service now.
     REDIS_URL: str = "redis://localhost:6379"
     LLM_CACHE_DB: int = 1
-    ARQ_REDIS_DB: int = 2
 
-    # LLM response cache (#3).
+    # LLM response cache.
     LLM_CACHE_ENABLED: bool = True
     LLM_CACHE_TTL_SEC: int = 604800  # 7 days
-
-    # Upload limits
-    MAX_UPLOAD_MB: int = 200  # podcasts can be ~150 MB; cap above that
 
     # CORS — CSV of allowed origins. Empty string disables CORS in prod;
     # default is wide-open in dev for convenience.

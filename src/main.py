@@ -14,7 +14,6 @@ from src.middleware.error_handler import (
     EmbeddingError,
     ExtractionError,
     LLMError,
-    TranscriptionError,
     global_error_handler,
 )
 from src.middleware.logging import LoggingMiddleware
@@ -23,11 +22,9 @@ from src.models.manager import ModelManager
 from src.routes import (
     admin,
     embed,
-    embed_image,
     extract,
     health,
     summarize,
-    transcribe,
     translate,
 )
 from src.utils.logging import get_logger, setup_logging
@@ -84,24 +81,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     llm_client = LLMClient(settings, cache=llm_cache)
 
-    # arq pool for enqueueing async transcription jobs (#1). Same Redis,
-    # different logical DB. The API only enqueues; a separate `arq` worker
-    # process executes the jobs.
-    arq_pool = None
-    try:
-        from arq import create_pool
-
-        from src.worker import _build_redis_settings
-
-        arq_pool = await create_pool(_build_redis_settings())
-        logger.info("arq_pool_ready", db=settings.ARQ_REDIS_DB)
-    except Exception as exc:
-        logger.warning(
-            "arq_pool_disabled",
-            reason=str(exc),
-            hint="Async transcription endpoints will return 503 until Redis is reachable",
-        )
-
     await model_manager.warmup()
 
     app.state.settings = settings
@@ -109,7 +88,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.cms_client = cms_client
     app.state.llm_client = llm_client
     app.state.redis_llm = redis_llm
-    app.state.arq_pool = arq_pool
 
     logger.info("ready", models=model_manager.is_ready)
     yield
@@ -120,17 +98,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await redis_llm.aclose()
         except Exception:
             pass
-    if arq_pool is not None:
-        try:
-            await arq_pool.aclose()
-        except Exception:
-            pass
     logger.info("shutdown_complete")
 
 
 app = FastAPI(
     title="Enrichment Service",
-    description="AI/ML enrichment microservice for the Wahb platform",
+    description="Text-intelligence + retrieval microservice for the Wahb "
+    "platform. Owns text embeddings, LLM-backed ops (translate, summarize, "
+    "tag extraction), and Scrapling web extraction. Whisper transcription "
+    "and CLIP image embedding moved to Media-Service.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -158,17 +134,15 @@ app.add_middleware(RequestIDMiddleware)
 # Prometheus metrics
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
-# Routes
+# Routes — transcribe + embed_image have moved to Media-Service.
 app.include_router(health.router)
-app.include_router(transcribe.router, prefix="/v1")
 app.include_router(embed.router, prefix="/v1")
-app.include_router(embed_image.router, prefix="/v1")
 app.include_router(extract.router, prefix="/v1")
 app.include_router(translate.router, prefix="/v1")
 app.include_router(summarize.router, prefix="/v1")
 app.include_router(admin.router, prefix="/v1")
 
-# Error handlers
-for exc_class in (CircuitOpenError, TranscriptionError, ExtractionError, EmbeddingError, LLMError):
+# Error handlers — TranscriptionError removed (it lives in Media-Service now).
+for exc_class in (CircuitOpenError, ExtractionError, EmbeddingError, LLMError):
     app.add_exception_handler(exc_class, global_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(Exception, global_error_handler)  # type: ignore[arg-type]
