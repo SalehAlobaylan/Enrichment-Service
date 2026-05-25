@@ -36,6 +36,7 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
             body.texts,
             content_ids=body.content_ids,
             extract_tags=body.extract_tags,
+            extract_sparse=body.extract_sparse,
         )
     except EmbeddingError:
         raise

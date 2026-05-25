@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     LLM_CACHE_DB: int = 1
 
+    # ─── Slice A — hybrid retrieval (/v1/related) ───────────────────
+    # RRF (Reciprocal Rank Fusion) dampening constant. Standard literature
+    # value is 60; smaller k weights the top of each ranking more heavily.
+    RRF_K: int = 60
+    # Per-mode candidate pool size before RRF fusion. Larger values give
+    # RRF more material to work with but cost two extra GORM rows per
+    # candidate; 50 is the sweet spot at our scale.
+    RELATED_K_DENSE_DEFAULT: int = 50
+    RELATED_K_SPARSE_DEFAULT: int = 50
+
     # LLM response cache.
     LLM_CACHE_ENABLED: bool = True
     LLM_CACHE_TTL_SEC: int = 604800  # 7 days

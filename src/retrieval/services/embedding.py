@@ -29,6 +29,7 @@ class EmbeddingService:
         texts: list[str],
         content_ids: list[str] | None = None,
         extract_tags: bool = False,
+        extract_sparse: bool = False,
     ) -> EmbedResponse:
         # Run embedding compute and tag-extraction concurrently when tagging
         # is requested — embedder is CPU, tagging is network-bound on the LLM.
@@ -38,8 +39,15 @@ class EmbeddingService:
         if extract_tags and self.tagger and texts:
             tags_task = asyncio.create_task(self.tagger.extract(texts[0]))
 
+        # Sparse is opt-in but cheap — same BGE-M3 forward pass as dense.
+        # Always-on when the caller wants to enable hybrid retrieval on this
+        # content_id.
         with embedding_duration.time():
-            vectors = await asyncio.to_thread(self.embedder.encode, texts)
+            encoded = await asyncio.to_thread(
+                self.embedder.encode, texts, extract_sparse
+            )
+        dense_vectors: list[list[float]] = encoded["dense"]
+        sparse_maps: list[dict[str, float]] | None = encoded["sparse"]
 
         embeddings_total.labels(status="success").inc()
 
@@ -51,7 +59,7 @@ class EmbeddingService:
                 logger.warning("tag_extraction_task_failed", error=str(exc))
 
         response = EmbedResponse(
-            embeddings=vectors,
+            embeddings=dense_vectors,
             model=self.embedder.model_name,
             dimensions=self.embedder.dimensions,
         )
@@ -61,17 +69,25 @@ class EmbeddingService:
 
         if content_ids:
             topic_tags = tags_result.tags if tags_result else None
-            status, error = await self._write_back(content_ids, vectors, topic_tags)
+            status, error = await self._write_back(
+                content_ids,
+                dense_vectors,
+                sparse_maps,
+                topic_tags,
+            )
             response.write_back_status = status
             response.write_back_error = error
 
         return response
 
     async def embed_query(self, text: str) -> EmbedQueryResponse:
-        vectors = await asyncio.to_thread(self.embedder.encode, [text])
+        # Query embedding path only needs dense — sparse is for write-back to
+        # CMS, not for ad-hoc query embedding (callers use /v1/related for
+        # hybrid query search, which embeds with sparse internally).
+        encoded = await asyncio.to_thread(self.embedder.encode, [text], False)
 
         return EmbedQueryResponse(
-            embedding=vectors[0],
+            embedding=encoded["dense"][0],
             model=self.embedder.model_name,
             dimensions=self.embedder.dimensions,
         )
@@ -80,28 +96,39 @@ class EmbeddingService:
         self,
         content_ids: list[str],
         vectors: list[list[float]],
+        sparse_maps: list[dict[str, float]] | None,
         topic_tags: list[str] | None = None,
     ) -> tuple[str, str | None]:
-        """Write each (content_id, vector) to CMS. Returns (status, first_error).
+        """Write each (content_id, vector, [sparse]) to CMS.
 
-        status is "ok" only if every write succeeded; "failed" if any did. We
-        still attempt every write so partial successes get persisted — the
-        returned error string is the first failure encountered, which is
-        enough to alert callers without flooding the response.
+        Returns (status, first_error). status is "ok" only if every write
+        succeeded; "failed" if any did. We still attempt every write so
+        partial successes get persisted — the returned error string is the
+        first failure encountered, which is enough to alert callers without
+        flooding the response.
 
         topic_tags, when provided, is sent on every write — the assumption is
         a batch of `texts` represents chunks of the same conceptual item.
+
+        sparse_maps, when None, means the caller didn't request sparse
+        extraction; the CMS column stays NULL (forward-compatible with the
+        Week 2b sparsevec column).
         """
         first_error: str | None = None
-        for content_id, vector in zip(content_ids, vectors):
+        for i, (content_id, vector) in enumerate(zip(content_ids, vectors)):
+            sparse = sparse_maps[i] if sparse_maps else None
             try:
                 await self.cms_client.store_embedding(
-                    content_id, vector, topic_tags=topic_tags
+                    content_id,
+                    vector,
+                    topic_tags=topic_tags,
+                    embedding_sparse=sparse,
                 )
                 logger.info(
                     "embedding_writeback_complete",
                     content_id=content_id,
                     topic_tag_count=len(topic_tags) if topic_tags else 0,
+                    has_sparse=sparse is not None,
                 )
             except Exception as exc:
                 err = str(exc)

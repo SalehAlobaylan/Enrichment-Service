@@ -86,6 +86,27 @@ tag_extractions_total = Counter(
     ["status"],
 )
 
+# ─── Slice A — hybrid retrieval (/v1/related) ───────────────
+
+related_requests_total = Counter(
+    "enrichment_related_requests_total",
+    "POST /v1/related request outcomes",
+    ["status"],
+)
+
+related_duration = Histogram(
+    "enrichment_related_duration_seconds",
+    "POST /v1/related total time (resolve query + 2× kNN + RRF fusion)",
+    buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5],
+)
+
+rrf_fusion_overlap_ratio = Gauge(
+    "enrichment_rrf_fusion_overlap_ratio",
+    "Fraction of fused results that came from both dense + sparse rankings. "
+    "High = the two modes are redundant for this corpus; low = hybrid is "
+    "pulling its weight by surfacing items that pure dense or sparse miss.",
+)
+
 llm_request_duration = Histogram(
     "enrichment_llm_request_duration_seconds",
     "LLM API request duration",

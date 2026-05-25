@@ -1,18 +1,19 @@
-"""Text embedder wrapper — BAAI/bge-m3 dense path.
+"""Text embedder wrapper — BAAI/bge-m3 dense + sparse via FlagEmbedding.
 
-BGE-M3 is multilingual (Arabic + English first-class) and produces 1024-dim
-dense vectors. This wrapper exposes the dense path only via
-sentence-transformers, which is already a dependency.
+BGE-M3 is multilingual (Arabic + English first-class) and produces two
+complementary outputs from one forward pass:
+  - Dense (1024-dim float vector): semantic similarity. Catches paraphrase.
+  - Sparse (learned lexical weights over a 250002-token vocab): exact-name
+    + morphology matching. Strictly better than BM25 for Arabic.
 
-Sparse output (BGE-M3's lexical-weights mode for hybrid retrieval) is
-intentionally NOT exposed here yet — Slice A will add the FlagEmbedding
-library and a second `encode_sparse()` method. The CMS schema already has
-the `embedding_sparse sparsevec(250002)` column standing by; until Slice A
-populates it, the column stays NULL.
+Both are needed for hybrid retrieval (Slice A). FlagEmbedding's
+BGEM3FlagModel is the official BAAI wrapper that exposes both modes; it
+uses sentence-transformers under the hood for the dense path, so there's
+no duplicate model load.
 
 Memory footprint with `use_fp16=True`:
 - BGE-M3 fp16: ~3 GB loaded (vs ~6 GB fp32) — negligible quality loss for retrieval
-- Cold start on CPU: ~60-90s (vs ~10s for the old all-MiniLM-L6-v2)
+- Cold start on CPU: ~60-90s
 """
 from src.common.utils.logging import get_logger
 
@@ -22,6 +23,10 @@ logger = get_logger(__name__)
 # Wahb's content items will ever feed it. The cap stays as a defensive
 # truncation for malformed input.
 MAX_TEXT_LENGTH = 8192
+
+# BGE-M3 vocabulary size — matches the `sparsevec(250002)` column type in
+# the CMS schema (migration 20260522000000_bge_m3_retrieval.sql).
+BGE_M3_SPARSE_DIM = 250002
 
 
 class EmbedderWrapper:
@@ -46,6 +51,11 @@ class EmbedderWrapper:
         return self._dimensions
 
     @property
+    def sparse_dim(self) -> int:
+        """Vocabulary size of BGE-M3's sparse output. Matches sparsevec(N) in CMS."""
+        return BGE_M3_SPARSE_DIM
+
+    @property
     def is_loaded(self) -> bool:
         return self._model is not None
 
@@ -53,43 +63,66 @@ class EmbedderWrapper:
         if self._model is not None:
             return
 
-        from sentence_transformers import SentenceTransformer
+        from FlagEmbedding import BGEM3FlagModel
 
         logger.info(
             "loading_embedder",
             model_name=self._model_name,
             use_fp16=self._use_fp16,
+            backend="BGEM3FlagModel",
         )
-        self._model = SentenceTransformer(
+        self._model = BGEM3FlagModel(
             self._model_name,
-            cache_folder=self._cache_folder,
+            use_fp16=self._use_fp16,
+            cache_dir=self._cache_folder,
         )
-        if self._use_fp16:
-            # Halves RAM (~6 GB → ~3 GB) with negligible quality loss for
-            # retrieval. Skip on devices that don't support fp16 by setting
-            # use_fp16=False (CPU supports it; ancient hardware may not).
-            try:
-                self._model.half()
-            except Exception as exc:
-                logger.warning(
-                    "fp16_failed_falling_back_to_fp32",
-                    error=str(exc),
-                )
 
-        # Probe with an Arabic + English token mix to confirm the tokenizer
-        # handles non-Latin scripts (the whole point of switching to BGE-M3).
-        test_embedding = self._model.encode(["test مرحبا"])
-        self._dimensions = len(test_embedding[0])
+        # Probe with an Arabic + English mix to confirm tokenizer handles
+        # non-Latin scripts (the whole point of switching to BGE-M3) and to
+        # bind dense dimensions before serving traffic.
+        probe = self._model.encode(
+            ["test مرحبا"],
+            return_dense=True,
+            return_sparse=False,
+            return_colbert_vecs=False,
+        )
+        self._dimensions = len(probe["dense_vecs"][0])
         logger.info(
             "embedder_loaded",
             model_name=self._model_name,
             dimensions=self._dimensions,
+            sparse_dim=BGE_M3_SPARSE_DIM,
         )
 
-    def encode(self, texts: list[str]) -> list[list[float]]:
+    def encode(
+        self,
+        texts: list[str],
+        with_sparse: bool = True,
+    ) -> dict[str, list]:
+        """Encode texts to dense (+ optional sparse) vectors.
+
+        Returns:
+            {
+                "dense":  list[list[float]],            # always (n_texts, 1024)
+                "sparse": list[dict[str, float]] | None # token_id_str → weight, or None
+            }
+
+        with_sparse=False is for read-only paths like /v1/embed/query where
+        only the dense vector matters; saves a small amount of compute.
+        """
         if self._model is None:
             raise RuntimeError("Embedding model is not loaded. Call load() first.")
 
         truncated = [text[:MAX_TEXT_LENGTH] for text in texts]
-        embeddings = self._model.encode(truncated, normalize_embeddings=True)
-        return [embedding.tolist() for embedding in embeddings]
+        out = self._model.encode(
+            truncated,
+            return_dense=True,
+            return_sparse=with_sparse,
+            return_colbert_vecs=False,
+        )
+        # BGE-M3 returns numpy arrays for dense and list[dict[str, float]] for
+        # sparse (lexical_weights). Normalize to plain Python types for JSON
+        # serialization downstream.
+        dense = [d.tolist() for d in out["dense_vecs"]]
+        sparse = list(out["lexical_weights"]) if with_sparse else None
+        return {"dense": dense, "sparse": sparse}

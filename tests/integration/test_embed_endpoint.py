@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 def test_embed_success(client: TestClient, auth_headers: dict[str, str]) -> None:
     client.app.state.model_manager.embedder.encode = MagicMock(  # type: ignore[union-attr]
-        return_value=[[0.1] * 1024]
+        return_value={"dense": [[0.1] * 1024], "sparse": None}
     )
     resp = client.post(
         "/v1/embed",
@@ -21,7 +21,7 @@ def test_embed_success(client: TestClient, auth_headers: dict[str, str]) -> None
 
 def test_embed_query_success(client: TestClient, auth_headers: dict[str, str]) -> None:
     client.app.state.model_manager.embedder.encode = MagicMock(  # type: ignore[union-attr]
-        return_value=[[0.5] * 1024]
+        return_value={"dense": [[0.5] * 1024], "sparse": None}
     )
     resp = client.post(
         "/v1/embed/query",

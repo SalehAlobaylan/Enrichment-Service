@@ -116,6 +116,74 @@ class CMSClient:
             metric_label="update_content",
         )
 
+    # ─── Slice A: hybrid retrieval ──────────────────────────────────
+
+    async def get_content_embeddings(self, content_id: str) -> dict[str, Any]:
+        """GET /internal/content-items/:id/embeddings — fetch (dense, sparse).
+
+        Used by /v1/related when the caller passes content_id instead of text
+        — avoids re-embedding what's already stored. Returns:
+            {"embedding": list[float] | None,
+             "embedding_sparse": dict[str, float] | None}
+        """
+        return await self._request(
+            "GET",
+            f"/internal/content-items/{content_id}/embeddings",
+            metric_label="get_content_embeddings",
+        )
+
+    async def knn_dense(
+        self,
+        vector: list[float],
+        types: list[str] | None = None,
+        k: int = 50,
+        exclude_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """POST /internal/content-items/knn — cosine kNN against `embedding`.
+
+        Returns the `hits` list directly (unwrapped from CMS's response
+        envelope). Each hit is `{id, type, score}` where score is `1 - cosine_distance`.
+        """
+        payload: dict[str, Any] = {
+            "embedding": vector,
+            "types": types or [],
+            "k": k,
+            "exclude_ids": exclude_ids or [],
+        }
+        resp = await self._request(
+            "POST",
+            "/internal/content-items/knn",
+            json=payload,
+            metric_label="knn_dense",
+        )
+        return resp.get("hits", [])
+
+    async def knn_sparse(
+        self,
+        sparse_map: dict[str, float],
+        types: list[str] | None = None,
+        k: int = 50,
+        exclude_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """POST /internal/content-items/knn-sparse — inner-product kNN against `embedding_sparse`.
+
+        sparse_map is BGE-M3's lexical-weights output: {token_id_str: weight}.
+        Returns the `hits` list directly.
+        """
+        payload: dict[str, Any] = {
+            "embedding_sparse": sparse_map,
+            "types": types or [],
+            "k": k,
+            "exclude_ids": exclude_ids or [],
+        }
+        resp = await self._request(
+            "POST",
+            "/internal/content-items/knn-sparse",
+            json=payload,
+            metric_label="knn_sparse",
+        )
+        return resp.get("hits", [])
+
     async def update_status(
         self,
         content_id: str,

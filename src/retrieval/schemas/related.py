@@ -1,0 +1,44 @@
+"""Schemas for POST /v1/related — hybrid retrieval endpoint."""
+from pydantic import BaseModel, Field, model_validator
+
+
+class RelatedRequest(BaseModel):
+    """Either `content_id` (look up stored embeddings) OR `text` (embed
+    fresh) must be supplied. `content_id` is the common path — News-feed
+    slide assembly anchors on a content_item that already has both vectors.
+    """
+
+    content_id: str | None = None
+    text: str | None = None
+    # Optional content-type filter, e.g. ["TWEET", "COMMENT"] to find related
+    # social commentary for a News-feed ARTICLE anchor.
+    types: list[str] | None = None
+    # Final number of items to return after RRF fusion. Candidate pools per
+    # mode (dense + sparse) are sized via RELATED_K_*_DEFAULT in config.
+    k: int = Field(10, ge=1, le=100)
+    # Caller-supplied id blocklist — typically the anchor itself + items the
+    # client has already shown the user this session.
+    exclude_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _need_one_anchor(self) -> "RelatedRequest":
+        if not self.content_id and not self.text:
+            raise ValueError("Provide either content_id or text")
+        if self.content_id and self.text:
+            raise ValueError("Provide content_id OR text, not both")
+        return self
+
+
+class RelatedItem(BaseModel):
+    """One retrieved result. `sources` indicates which retrieval mode(s)
+    surfaced this item — useful for debugging RRF behavior + dashboards.
+    """
+
+    content_id: str
+    score: float
+    content_type: str | None = None
+    sources: list[str]  # subset of ["dense", "sparse"]
+
+
+class RelatedResponse(BaseModel):
+    results: list[RelatedItem]
