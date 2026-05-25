@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from src.schemas.extract import ExtractResponse
+from src.extraction.schemas.extract import ExtractResponse
 
 
 def test_extract_success(client: TestClient, auth_headers: dict[str, str]) -> None:
@@ -19,7 +19,7 @@ def test_extract_success(client: TestClient, auth_headers: dict[str, str]) -> No
         metadata={"url": "https://example.com", "domain": "example.com"},
     )
     with patch(
-        "src.services.extraction.ExtractionService.extract",
+        "src.extraction.services.extraction.ExtractionService.extract",
         return_value=mock_result,
     ):
         resp = client.post(

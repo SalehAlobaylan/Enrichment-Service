@@ -1,8 +1,8 @@
 import respx
 from httpx import Response
 
-from src.clients.cms import CMSClient
-from src.config import Settings
+from src.common.clients.cms import CMSClient
+from src.common.config import Settings
 
 
 def make_settings(cms_base_url: str) -> Settings:

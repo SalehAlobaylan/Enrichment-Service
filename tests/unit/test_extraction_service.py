@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.services.extraction import ExtractionService
+from src.extraction.services.extraction import ExtractionService
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-from src.config import Settings
+from src.common.config import Settings
 
 
 def test_defaults() -> None:
@@ -8,8 +8,9 @@ def test_defaults() -> None:
         CMS_BASE_URL="http://localhost:8080",
     )
     # Whisper + TRANSCRIBE_TIMEOUT_SEC moved to Media-Service.
+    # Embedder swapped to BGE-M3 in Slice 0 for Arabic-native retrieval.
     assert s.PORT == 5050
-    assert s.EMBEDDING_MODEL == "all-MiniLM-L6-v2"
+    assert s.EMBEDDING_MODEL == "BAAI/bge-m3"
     assert s.CB_FAILURE_THRESHOLD == 5
     assert s.CB_RESET_TIMEOUT_SEC == 30
     assert s.EXTRACT_TIMEOUT_SEC == 30

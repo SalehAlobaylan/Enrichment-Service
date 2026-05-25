@@ -1,7 +1,7 @@
 import pytest
 
-from src.clients.circuit_breaker import CircuitBreaker, CircuitState
-from src.middleware.error_handler import CircuitOpenError
+from src.common.clients.circuit_breaker import CircuitBreaker, CircuitState
+from src.common.middleware.error_handler import CircuitOpenError
 
 
 @pytest.fixture

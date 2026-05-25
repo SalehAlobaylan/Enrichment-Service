@@ -5,29 +5,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from src.clients.cms import CMSClient
-from src.clients.llm import LLMClient
-from src.clients.llm_cache import LLMCache
-from src.config import Settings
-from src.middleware.error_handler import (
+from src.common.clients.cms import CMSClient
+from src.common.config import Settings
+from src.common.middleware.error_handler import (
     CircuitOpenError,
     EmbeddingError,
     ExtractionError,
     LLMError,
     global_error_handler,
 )
-from src.middleware.logging import LoggingMiddleware
-from src.middleware.request_id import RequestIDMiddleware
-from src.models.manager import ModelManager
-from src.routes import (
-    admin,
-    embed,
-    extract,
-    health,
-    summarize,
-    translate,
-)
-from src.utils.logging import get_logger, setup_logging
+from src.common.middleware.logging import LoggingMiddleware
+from src.common.middleware.request_id import RequestIDMiddleware
+from src.common.routes import admin, health
+from src.common.utils.logging import get_logger, setup_logging
+from src.extraction.routes import extract
+from src.llm.clients.llm import LLMClient
+from src.llm.clients.llm_cache import LLMCache
+from src.llm.routes import summarize, translate
+from src.retrieval.models.manager import ModelManager
+from src.retrieval.routes import embed
 
 
 @asynccontextmanager

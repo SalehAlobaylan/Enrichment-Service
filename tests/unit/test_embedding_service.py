@@ -2,16 +2,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.models.embedder import MAX_TEXT_LENGTH, EmbedderWrapper
-from src.services.embedding import EmbeddingService
+from src.retrieval.models.embedder import MAX_TEXT_LENGTH, EmbedderWrapper
+from src.retrieval.services.embedding import EmbeddingService
 
 
 @pytest.fixture
 def mock_embedder() -> MagicMock:
     embedder = MagicMock(spec=EmbedderWrapper)
-    embedder.model_name = "all-MiniLM-L6-v2"
-    embedder.dimensions = 384
-    embedder.encode.return_value = [[0.1] * 384, [0.2] * 384]
+    embedder.model_name = "BAAI/bge-m3"
+    embedder.dimensions = 1024
+    embedder.encode.return_value = [[0.1] * 1024, [0.2] * 1024]
     return embedder
 
 
@@ -31,8 +31,8 @@ def service(mock_embedder: MagicMock, mock_cms: AsyncMock) -> EmbeddingService:
 async def test_embed_returns_vectors(service: EmbeddingService) -> None:
     result = await service.embed(["hello", "world"])
     assert len(result.embeddings) == 2
-    assert result.dimensions == 384
-    assert result.model == "all-MiniLM-L6-v2"
+    assert result.dimensions == 1024
+    assert result.model == "BAAI/bge-m3"
 
 
 @pytest.mark.asyncio
@@ -53,9 +53,9 @@ async def test_embed_writeback_with_content_ids(
 
 @pytest.mark.asyncio
 async def test_embed_query(service: EmbeddingService, mock_embedder: MagicMock) -> None:
-    mock_embedder.encode.return_value = [[0.5] * 384]
+    mock_embedder.encode.return_value = [[0.5] * 1024]
     result = await service.embed_query("search query")
-    assert len(result.embedding) == 384
+    assert len(result.embedding) == 1024
 
 
 def test_text_truncation() -> None:

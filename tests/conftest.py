@@ -3,9 +3,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from src.clients.cms import CMSClient
-from src.clients.llm import LLMClient
-from src.config import Settings
+from src.common.clients.cms import CMSClient
+from src.common.config import Settings
+from src.llm.clients.llm import LLMClient
 from src.main import app
 
 
@@ -30,10 +30,10 @@ def mock_model_manager() -> MagicMock:
     manager.is_ready = {"embedder": True}
     manager.all_ready = True
 
-    # Embedder mock
+    # Embedder mock — BGE-M3 (1024-dim, multilingual) after Slice 0.
     manager.embedder.is_loaded = True
-    manager.embedder.model_name = "all-MiniLM-L6-v2"
-    manager.embedder.dimensions = 384
+    manager.embedder.model_name = "BAAI/bge-m3"
+    manager.embedder.dimensions = 1024
 
     return manager
 
