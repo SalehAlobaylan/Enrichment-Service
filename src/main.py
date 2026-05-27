@@ -23,7 +23,7 @@ from src.llm.clients.llm import LLMClient
 from src.llm.clients.llm_cache import LLMCache
 from src.llm.routes import summarize, translate
 from src.retrieval.models.manager import ModelManager
-from src.retrieval.routes import embed, related
+from src.retrieval.routes import embed, feed_news, related
 
 
 @asynccontextmanager
@@ -134,6 +134,7 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 app.include_router(health.router)
 app.include_router(embed.router, prefix="/v1")
 app.include_router(related.router, prefix="/v1")  # Slice A — hybrid retrieval
+app.include_router(feed_news.router, prefix="/v1")  # Slice B — News-feed slide assembly
 app.include_router(extract.router, prefix="/v1")
 app.include_router(translate.router, prefix="/v1")
 app.include_router(summarize.router, prefix="/v1")

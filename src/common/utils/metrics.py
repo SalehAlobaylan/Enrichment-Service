@@ -107,6 +107,39 @@ rrf_fusion_overlap_ratio = Gauge(
     "pulling its weight by surfacing items that pure dense or sparse miss.",
 )
 
+# ─── Slice B — reranker + News-feed slide assembly ──────────
+
+rerank_duration = Histogram(
+    "enrichment_rerank_duration_seconds",
+    "Cross-encoder rerank inference time over the post-RRF candidate set",
+    buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5],
+)
+
+rerank_requests_total = Counter(
+    "enrichment_rerank_requests_total",
+    "Rerank stage outcomes (success | failure — failure falls back to RRF order)",
+    ["status"],
+)
+
+feed_news_requests_total = Counter(
+    "enrichment_feed_news_requests_total",
+    "POST /v1/feed/news/slide outcomes",
+    ["status"],
+)
+
+feed_news_duration = Histogram(
+    "enrichment_feed_news_duration_seconds",
+    "POST /v1/feed/news/slide total time (anchor + related + rerank + rules)",
+    buckets=[0.1, 0.2, 0.5, 1, 2, 5, 10],
+)
+
+ranking_rules_dropped_total = Counter(
+    "enrichment_ranking_rules_dropped_total",
+    "Items dropped by each ranking rule "
+    "(rule: freshness | source_diversity | type_quotas)",
+    ["rule"],
+)
+
 llm_request_duration = Histogram(
     "enrichment_llm_request_duration_seconds",
     "LLM API request duration",

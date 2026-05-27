@@ -28,21 +28,32 @@ class Settings(BaseSettings):
     CB_HALF_OPEN_REQUESTS: int = 3
 
     # LLM
-    # Supported providers: "openai", "anthropic", "gemini", or "none"/"" to disable.
-    LLM_PROVIDER: str = "openai"
-    LLM_MODEL: str = "gpt-4o-mini"
+    # Supported providers: "gemini" (primary), "deepseek" (fallback),
+    # "openai", "anthropic", or "none"/"" to disable.
+    #
+    # Default chain is Gemini → DeepSeek per the platform decision:
+    # Gemini 3.5 Flash is the cheapest capable model for Wahb's Arabic-heavy
+    # translate/summarize/tag workload, and DeepSeek (OpenAI-compatible API,
+    # base URL https://api.deepseek.com/v1) is a cost-effective fallback that
+    # avoids dependency on a single vendor. OpenAI + Anthropic remain
+    # supported so ops can switch quickly if Gemini and DeepSeek both have
+    # an outage — but they're not in the default chain.
+    LLM_PROVIDER: str = "gemini"
+    LLM_MODEL: str = "gemini-3.5-flash"
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    DEEPSEEK_API_KEY: str = ""
     # Optional fallback providers (CSV), tried in order when the primary
     # provider exhausts its retries on a retryable error. Each named provider
-    # must have its API key set.
-    LLM_FALLBACK_PROVIDERS: str = ""
+    # must have its API key set. Default chain: gemini → deepseek.
+    LLM_FALLBACK_PROVIDERS: str = "deepseek"
     # Per-provider model overrides (used when a fallback fires). If unset for
     # a given provider, falls back to provider-default sensible model.
     LLM_OPENAI_MODEL: str = ""
     LLM_ANTHROPIC_MODEL: str = ""
     LLM_GEMINI_MODEL: str = ""
+    LLM_DEEPSEEK_MODEL: str = "deepseek-chat"
 
     # Timeouts — TRANSCRIBE_TIMEOUT_SEC moved to Media-Service.
     EXTRACT_TIMEOUT_SEC: int = 30
@@ -53,15 +64,39 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     LLM_CACHE_DB: int = 1
 
-    # ─── Slice A — hybrid retrieval (/v1/related) ───────────────────
-    # RRF (Reciprocal Rank Fusion) dampening constant. Standard literature
-    # value is 60; smaller k weights the top of each ranking more heavily.
+    # ─── Retrieval tuning knobs ─────────────────────────────────────
+    # These are NOT documented in .env.example — they're code defaults,
+    # not operator-facing infrastructure. Long-term they move into a CMS
+    # config table editable via Platform-Console (Retrieval Tuning page).
+    # Env overrides still resolve here as an emergency escape hatch, but
+    # ops shouldn't reach for them as a normal lever.
+    #
+    # Slice A — hybrid retrieval (/v1/related):
+    #   RRF_K                       — Reciprocal Rank Fusion constant (standard 60)
+    #   RELATED_K_DENSE_DEFAULT     — dense kNN pool size before fusion
+    #   RELATED_K_SPARSE_DEFAULT    — sparse kNN pool size before fusion
+    # Slice B — reranker + News-feed slide assembly:
+    #   RERANK_ENABLED              — kept env-documented (feature toggle, not a number)
+    #   RERANKER_MODEL              — kept env-documented (model selector, boot-time)
+    #   RERANK_INPUT_K              — candidates rescored by the cross-encoder
+    #   FRESHNESS_DECAY_*_DAYS      — per-content-type decay τ (5 knobs)
+    #   NEWS_MAX_PER_SOURCE         — source diversity cap
+
+    RERANK_ENABLED: bool = True
+    RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+
     RRF_K: int = 60
-    # Per-mode candidate pool size before RRF fusion. Larger values give
-    # RRF more material to work with but cost two extra GORM rows per
-    # candidate; 50 is the sweet spot at our scale.
     RELATED_K_DENSE_DEFAULT: int = 50
     RELATED_K_SPARSE_DEFAULT: int = 50
+    RERANK_INPUT_K: int = 30
+
+    FRESHNESS_DECAY_TWEET_DAYS: int = 2
+    FRESHNESS_DECAY_COMMENT_DAYS: int = 2
+    FRESHNESS_DECAY_ARTICLE_DAYS: int = 30
+    FRESHNESS_DECAY_PODCAST_DAYS: int = 90
+    FRESHNESS_DECAY_VIDEO_DAYS: int = 30
+
+    NEWS_MAX_PER_SOURCE: int = 2
 
     # LLM response cache.
     LLM_CACHE_ENABLED: bool = True
@@ -98,11 +133,17 @@ class Settings(BaseSettings):
         Per-provider override env vars (LLM_OPENAI_MODEL etc.) win when set;
         otherwise fall back to LLM_MODEL (which is the model name the operator
         configured for the primary provider).
+
+        DeepSeek has its own override default (`deepseek-chat`) because the
+        primary LLM_MODEL is typically a Gemini model name that DeepSeek
+        wouldn't accept — so LLM_DEEPSEEK_MODEL has a real default, unlike
+        the other providers whose override is empty by convention.
         """
         override_map = {
             "openai": self.LLM_OPENAI_MODEL,
             "anthropic": self.LLM_ANTHROPIC_MODEL,
             "gemini": self.LLM_GEMINI_MODEL,
+            "deepseek": self.LLM_DEEPSEEK_MODEL,
         }
         override = (override_map.get(provider) or "").strip()
         return override or self.LLM_MODEL
@@ -137,6 +178,11 @@ class Settings(BaseSettings):
                 _missing_key(
                     "LLM_PROVIDER=gemini but GEMINI_API_KEY is empty"
                 )
+        elif provider == "deepseek":
+            if not self.DEEPSEEK_API_KEY.strip():
+                _missing_key(
+                    "LLM_PROVIDER=deepseek but DEEPSEEK_API_KEY is empty"
+                )
         elif provider in ("", "none", "disabled"):
             pass
         else:
@@ -144,7 +190,7 @@ class Settings(BaseSettings):
             # break the entire LLM surface and is almost certainly a typo.
             errors.append(
                 f"LLM_PROVIDER={self.LLM_PROVIDER!r} is not supported "
-                "(expected one of: openai, anthropic, gemini, none)"
+                "(expected one of: openai, anthropic, gemini, deepseek, none)"
             )
 
         # Validate fallback chain — each named provider must have its API key
@@ -154,6 +200,7 @@ class Settings(BaseSettings):
             "openai": self.OPENAI_API_KEY,
             "anthropic": self.ANTHROPIC_API_KEY,
             "gemini": self.GEMINI_API_KEY,
+            "deepseek": self.DEEPSEEK_API_KEY,
         }
         for fp in self.fallback_providers:
             if fp == provider:
@@ -165,7 +212,7 @@ class Settings(BaseSettings):
             if fp not in _provider_keys:
                 errors.append(
                     f"LLM_FALLBACK_PROVIDERS contains unsupported provider {fp!r} "
-                    "(expected: openai, anthropic, gemini)"
+                    "(expected: openai, anthropic, gemini, deepseek)"
                 )
                 continue
             if not _provider_keys[fp].strip():

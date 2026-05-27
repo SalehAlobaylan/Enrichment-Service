@@ -19,6 +19,11 @@ class RelatedRequest(BaseModel):
     # Caller-supplied id blocklist — typically the anchor itself + items the
     # client has already shown the user this session.
     exclude_ids: list[str] | None = None
+    # When True (default), run the cross-encoder reranker on the top
+    # RERANK_INPUT_K post-RRF candidates and reorder by rerank score. Set
+    # False for debugging or to bypass the reranker (e.g., when the model
+    # isn't loaded yet during cold start).
+    rerank: bool = True
 
     @model_validator(mode="after")
     def _need_one_anchor(self) -> "RelatedRequest":
@@ -32,12 +37,25 @@ class RelatedRequest(BaseModel):
 class RelatedItem(BaseModel):
     """One retrieved result. `sources` indicates which retrieval mode(s)
     surfaced this item — useful for debugging RRF behavior + dashboards.
+
+    After Slice B's rerank stage runs, `score` is the rerank score (sigmoid
+    in [0, 1]) and `rerank_score` mirrors it for clarity; the original RRF
+    score is overwritten. When rerank is skipped, `score` is the raw RRF
+    fused score and `rerank_score` is None.
     """
 
     content_id: str
     score: float
     content_type: str | None = None
     sources: list[str]  # subset of ["dense", "sparse"]
+    # Populated only when the reranker stage ran. None means: rerank was
+    # disabled, or the candidate was filtered out before reaching the reranker.
+    rerank_score: float | None = None
+    # Surface for Slice B ranking rules (freshness decay, source diversity).
+    # Both are pulled from the CMS batch-text fetch that feeds the reranker;
+    # absent when rerank=False (no batch-text fetch happened).
+    published_at: str | None = None
+    source_name: str | None = None
 
 
 class RelatedResponse(BaseModel):

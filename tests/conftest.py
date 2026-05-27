@@ -22,18 +22,25 @@ def test_settings() -> Settings:
 
 @pytest.fixture
 def mock_model_manager() -> MagicMock:
-    """Mock for Enrichment-Service's ModelManager (text embedder only).
+    """Mock for Enrichment-Service's ModelManager (text embedder + reranker).
 
     Whisper + CLIP mocks moved to Media-Service's conftest.
     """
     manager = MagicMock()
-    manager.is_ready = {"embedder": True}
+    manager.is_ready = {"embedder": True, "reranker": True}
     manager.all_ready = True
 
     # Embedder mock — BGE-M3 (1024-dim, multilingual) after Slice 0.
     manager.embedder.is_loaded = True
     manager.embedder.model_name = "BAAI/bge-m3"
     manager.embedder.dimensions = 1024
+
+    # Reranker mock — bge-reranker-v2-m3 (Slice B). Default scores are
+    # decreasing, so when the orchestration test re-ranks N candidates the
+    # output order matches input. Individual tests override .rerank as needed.
+    manager.reranker.is_loaded = True
+    manager.reranker.model_name = "BAAI/bge-reranker-v2-m3"
+    manager.reranker.rerank = MagicMock(return_value=[])
 
     return manager
 
@@ -44,6 +51,22 @@ def mock_cms_client() -> AsyncMock:
     client.health_check.return_value = True
     client.store_embedding.return_value = {"ok": True}
     client.update_content.return_value = {"ok": True}
+    # Slice A/B defaults — individual tests override as needed.
+    client.get_content_embeddings.return_value = {
+        "embedding": [0.1] * 1024,
+        "embedding_sparse": {"100": 0.5},
+    }
+    client.knn_dense.return_value = []
+    client.knn_sparse.return_value = []
+    client.batch_text.return_value = []
+    client.get_content_item_basic.return_value = {
+        "id": "anchor-id",
+        "type": "ARTICLE",
+        "title": "Test anchor",
+        "excerpt": "Test excerpt",
+        "source_name": "test-source",
+        "published_at": "2026-05-20T12:00:00Z",
+    }
     return client
 
 

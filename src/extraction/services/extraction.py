@@ -20,6 +20,13 @@ class ExtractionService:
         return result
 
     def _do_extract(self, url: str, include_html: bool) -> ExtractResponse:
+        # Plain-HTTP path (scrapling.defaults.Fetcher) — does NOT require
+        # Playwright/Chromium. Phase 8 removed Playwright from production
+        # requirements.txt to keep the Docker image lean (~500 MB saved).
+        # If a future change needs JS rendering, import
+        # `scrapling.fetchers.PlayWrightFetcher` instead AND restore Playwright
+        # to requirements.txt (and the Chromium apt deps in the Dockerfile).
+        # See plan-file Phase 8 for the full reasoning.
         from scrapling.defaults import Fetcher
 
         fetcher = Fetcher(auto_match=True)

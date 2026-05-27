@@ -123,6 +123,20 @@ class LLMClient:
             self._clients["gemini"] = genai.Client(api_key=settings.GEMINI_API_KEY)
             self._dispatch["gemini"] = self._gemini_complete
 
+        if settings.DEEPSEEK_API_KEY:
+            # DeepSeek is OpenAI-compatible — same chat.completions API, same
+            # request/response shape. We instantiate a separate AsyncOpenAI
+            # client pointed at DeepSeek's base URL so the SDK code path is
+            # identical to OpenAI's; the only difference is where requests
+            # land. See https://api-docs.deepseek.com/ for the contract.
+            from openai import AsyncOpenAI
+
+            self._clients["deepseek"] = AsyncOpenAI(
+                api_key=settings.DEEPSEEK_API_KEY,
+                base_url="https://api.deepseek.com/v1",
+            )
+            self._dispatch["deepseek"] = self._deepseek_complete
+
     @property
     def provider(self) -> str:
         """Backward-compat alias — some legacy callers read this."""
@@ -305,6 +319,32 @@ class LLMClient:
     ) -> str:
         client = self._clients["openai"]
         model = self.settings.model_for("openai")
+        extra_headers = self._request_id_headers() or None
+        response = await client.chat.completions.create(  # type: ignore[attr-defined]
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            extra_headers=extra_headers,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise LLMError("LLM returned empty response")
+        return content
+
+    async def _deepseek_complete(
+        self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
+    ) -> str:
+        # DeepSeek speaks the OpenAI chat-completions wire format, so the
+        # call is literally identical to _openai_complete — only the client
+        # instance (pointed at api.deepseek.com) differs. Kept as a separate
+        # method so the dispatch table + metrics + classification still see
+        # "deepseek" as a distinct provider name.
+        client = self._clients["deepseek"]
+        model = self.settings.model_for("deepseek")
         extra_headers = self._request_id_headers() or None
         response = await client.chat.completions.create(  # type: ignore[attr-defined]
             model=model,

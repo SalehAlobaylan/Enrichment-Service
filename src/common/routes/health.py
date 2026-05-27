@@ -49,7 +49,9 @@ async def models(request: Request) -> ModelsResponse:
     """Enrichment-Service model registry.
 
     Whisper + CLIP are reported by Media-Service's /v1/models endpoint.
-    Slice 0 will add the BGE-M3 reranker here alongside the embedder.
+    Enrichment hosts:
+      - embedder: BGE-M3 (dense + sparse text vectors)
+      - reranker: bge-reranker-v2-m3 (cross-encoder for /v1/feed/news/slide)
     """
     model_manager = request.app.state.model_manager
 
@@ -61,6 +63,12 @@ async def models(request: Request) -> ModelsResponse:
             dimensions=model_manager.embedder.dimensions
             if model_manager.embedder.is_loaded
             else None,
+        ),
+        ModelInfoItem(
+            name=model_manager.reranker.model_name,
+            loaded=model_manager.reranker.is_loaded,
+            type="cross-encoder",
+            dimensions=None,
         ),
     ]
 

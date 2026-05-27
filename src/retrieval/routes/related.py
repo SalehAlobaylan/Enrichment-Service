@@ -25,7 +25,15 @@ async def related(body: RelatedRequest, request: Request) -> RelatedResponse:
     if not model_manager.embedder.is_loaded:
         raise EmbeddingError("Embedding model is not loaded")
 
-    service = RelatedService(model_manager.embedder, cms_client, settings)
+    # Pass the reranker — RelatedService gracefully skips the rerank stage
+    # when the model isn't loaded yet (cold start) or the caller set
+    # rerank=False.
+    service = RelatedService(
+        model_manager.embedder,
+        cms_client,
+        settings,
+        reranker=model_manager.reranker,
+    )
 
     try:
         return await service.related(body)

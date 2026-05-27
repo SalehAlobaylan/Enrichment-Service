@@ -184,6 +184,40 @@ class CMSClient:
         )
         return resp.get("hits", [])
 
+    # ─── Slice B: reranker batch text + anchor fetch ────────────────
+
+    async def batch_text(self, ids: list[str]) -> list[dict[str, Any]]:
+        """POST /internal/content-items/batch-text — fetch text + metadata
+        for a small set of ids (typically the post-RRF candidate pool that
+        the reranker stage scores).
+
+        Returns the `items` list directly. Each item has:
+            {id, type, title, excerpt, body_text, source_name, published_at}
+        with nullable string fields preserved as None when absent.
+        """
+        if not ids:
+            return []
+        resp = await self._request(
+            "POST",
+            "/internal/content-items/batch-text",
+            json={"ids": ids},
+            metric_label="batch_text",
+        )
+        return resp.get("items", [])
+
+    async def get_content_item_basic(self, content_id: str) -> dict[str, Any]:
+        """GET /internal/content-items/:id — fetch the full content item.
+
+        Used by FeedNewsService to resolve the anchor for the slide response.
+        Returns the raw CMS payload; the caller picks out the fields they
+        need (typically just title, excerpt, type, source_name, published_at).
+        """
+        return await self._request(
+            "GET",
+            f"/internal/content-items/{content_id}",
+            metric_label="get_content_item_basic",
+        )
+
     async def update_status(
         self,
         content_id: str,
