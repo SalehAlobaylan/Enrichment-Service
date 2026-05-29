@@ -8,6 +8,15 @@
 # FlagReranker for the reranker download.
 FROM python:3.11-slim AS model-downloader
 
+# gcc + python headers are needed because FlagEmbedding pulls `zlib-state`
+# (via the peft → accelerate → transformers chain) which has no pre-built
+# wheel and compiles from source. This stage is discarded after `/models`
+# is copied to the runtime stage, so the build-tools bloat doesn't ship.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir \
     --extra-index-url https://download.pytorch.org/whl/cpu \
     torch \
@@ -43,7 +52,17 @@ WORKDIR /app
 COPY --from=model-downloader /models /app/models
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install build tools, install Python deps (FlagEmbedding's transitive
+# zlib-state needs gcc), then remove the build tools in the same layer so
+# they don't ship in the final image. Saves ~250 MB vs leaving gcc
+# installed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        python3-dev \
+    && pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y gcc python3-dev \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY src/ src/
 COPY scripts/ scripts/

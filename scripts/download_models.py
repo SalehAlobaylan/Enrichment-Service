@@ -29,14 +29,18 @@ def download_embedder(output_dir: str, model_name: str = "BAAI/bge-m3") -> None:
 def download_reranker(
     output_dir: str, model_name: str = "BAAI/bge-reranker-v2-m3"
 ) -> None:
-    from FlagEmbedding import FlagReranker
+    # huggingface_hub.snapshot_download pulls weights + config + tokenizer
+    # without triggering FlagEmbedding's compute_score path, which in some
+    # FlagEmbedding↔transformers version combos hits
+    # `XLMRobertaTokenizer has no attribute prepare_for_model`. The
+    # `/ready` endpoint exercises the real load+inference path at runtime,
+    # so we don't need an inference probe during the build.
+    from huggingface_hub import snapshot_download
 
     print(f"Downloading reranker model: {model_name}")
-    reranker = FlagReranker(model_name, use_fp16=True, cache_dir=output_dir)
-    # Probe with one Arabic + one English pair so the model is fully resident.
-    reranker.compute_score(
-        [["test query", "test candidate"], ["استعلام", "مرشح"]],
-        normalize=True,
+    snapshot_download(
+        repo_id=model_name,
+        cache_dir=output_dir,
     )
     print("Reranker model downloaded.")
 
