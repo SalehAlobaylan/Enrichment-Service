@@ -15,17 +15,21 @@ class HealthResponse(BaseModel):
     version: str
 
 
-class ReadyResponse(BaseModel):
-    status: str
-    models: dict[str, bool]
-    dependencies: dict[str, bool]
-
-
 class ModelInfoItem(BaseModel):
     name: str
     loaded: bool
     type: str
     dimensions: int | None = None
+
+
+class ReadyResponse(BaseModel):
+    status: str
+    models: dict[str, bool]
+    dependencies: dict[str, bool]
+    # Richer per-model identity (name + dims), additive to the bool `models`
+    # map. `type` is the role (embedder/reranker) — the admin dashboard joins
+    # on it to show model names/dims instead of bare load booleans.
+    models_detail: list[ModelInfoItem] = []
 
 
 class ModelsResponse(BaseModel):

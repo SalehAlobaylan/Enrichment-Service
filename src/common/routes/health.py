@@ -10,6 +10,30 @@ router = APIRouter()
 VERSION = "1.0.0"
 
 
+def _model_items(model_manager) -> list[ModelInfoItem]:
+    """Per-model identity (name + dims), shared by /ready and /v1/models.
+
+    `type` is the role (embedder/reranker) so the admin dashboard can join it
+    against the /ready `models` bool-map keys to show names + dims.
+    """
+    return [
+        ModelInfoItem(
+            name=model_manager.embedder.model_name,
+            loaded=model_manager.embedder.is_loaded,
+            type="embedder",
+            dimensions=model_manager.embedder.dimensions
+            if model_manager.embedder.is_loaded
+            else None,
+        ),
+        ModelInfoItem(
+            name=model_manager.reranker.model_name,
+            loaded=model_manager.reranker.is_loaded,
+            type="reranker",
+            dimensions=None,
+        ),
+    ]
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(
@@ -37,6 +61,7 @@ async def ready(request: Request, response: Response) -> ReadyResponse:
         status="ok" if all_ready else "not_ready",
         models=models_status,
         dependencies={"cms": cms_reachable},
+        models_detail=_model_items(model_manager),
     )
 
 
@@ -53,23 +78,4 @@ async def models(request: Request) -> ModelsResponse:
       - embedder: BGE-M3 (dense + sparse text vectors)
       - reranker: bge-reranker-v2-m3 (cross-encoder for /v1/feed/news/slide)
     """
-    model_manager = request.app.state.model_manager
-
-    items = [
-        ModelInfoItem(
-            name=model_manager.embedder.model_name,
-            loaded=model_manager.embedder.is_loaded,
-            type="sentence-transformer",
-            dimensions=model_manager.embedder.dimensions
-            if model_manager.embedder.is_loaded
-            else None,
-        ),
-        ModelInfoItem(
-            name=model_manager.reranker.model_name,
-            loaded=model_manager.reranker.is_loaded,
-            type="cross-encoder",
-            dimensions=None,
-        ),
-    ]
-
-    return ModelsResponse(models=items)
+    return ModelsResponse(models=_model_items(request.app.state.model_manager))
