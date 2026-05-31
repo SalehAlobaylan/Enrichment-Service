@@ -102,6 +102,13 @@ class Settings(BaseSettings):
     LLM_CACHE_ENABLED: bool = True
     LLM_CACHE_TTL_SEC: int = 604800  # 7 days
 
+    # News-feed slide cache (Slice B read-path). Short TTL — related items
+    # change slowly, and caching the assembled slide keeps the cross-encoder
+    # reranker off the synchronous feed path. Shares the LLM-cache Redis (db=1)
+    # via a distinct key prefix.
+    FEED_SLIDE_CACHE_ENABLED: bool = True
+    FEED_SLIDE_CACHE_TTL_SEC: int = 300  # 5 minutes
+
     # CORS — CSV of allowed origins. Empty string disables CORS in prod;
     # default is wide-open in dev for convenience.
     CORS_ALLOWED_ORIGINS: str = "*"

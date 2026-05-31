@@ -22,6 +22,7 @@ from src.extraction.routes import extract
 from src.llm.clients.llm import LLMClient
 from src.llm.clients.llm_cache import LLMCache
 from src.llm.routes import summarize, translate
+from src.retrieval.clients.slide_cache import SlideCache
 from src.retrieval.models.manager import ModelManager
 from src.retrieval.routes import embed, feed_news, related
 
@@ -77,6 +78,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     llm_client = LLMClient(settings, cache=llm_cache)
 
+    # News-feed slide cache — reuses the LLM-cache Redis connection (db=1) with
+    # a distinct key prefix. None if the cache is off or Redis was unreachable
+    # above; FeedNewsService then always computes.
+    slide_cache: SlideCache | None = None
+    if settings.FEED_SLIDE_CACHE_ENABLED and redis_llm is not None:
+        slide_cache = SlideCache(
+            redis_llm, default_ttl_sec=settings.FEED_SLIDE_CACHE_TTL_SEC
+        )
+        logger.info("slide_cache_ready", ttl_sec=settings.FEED_SLIDE_CACHE_TTL_SEC)
+
     await model_manager.warmup()
 
     app.state.settings = settings
@@ -84,6 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.cms_client = cms_client
     app.state.llm_client = llm_client
     app.state.redis_llm = redis_llm
+    app.state.slide_cache = slide_cache
 
     logger.info("ready", models=model_manager.is_ready)
     yield

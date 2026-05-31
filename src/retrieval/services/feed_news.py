@@ -21,7 +21,10 @@ from src.common.utils.logging import get_logger
 from src.common.utils.metrics import (
     feed_news_duration,
     feed_news_requests_total,
+    feed_slide_cache_hits_total,
+    feed_slide_cache_misses_total,
 )
+from src.retrieval.clients.slide_cache import SlideCache
 from src.retrieval.schemas.feed_news import (
     FeedNewsAnchor,
     FeedNewsSlideRequest,
@@ -33,10 +36,12 @@ from src.retrieval.services.related import RelatedService
 
 logger = get_logger(__name__)
 
-# News-feed default — when the caller doesn't constrain types, fan over
-# TWEET + COMMENT. ARTICLE anchors aren't included (we're finding items
-# RELATED to the article, not other articles).
-_DEFAULT_TYPES = ["TWEET", "COMMENT"]
+# News-feed default — when the caller doesn't constrain types. Includes ARTICLE
+# so "related" surfaces topically-similar news even on a corpus with no
+# tweets/comments (the anchor itself is always excluded via exclude_ids, so an
+# ARTICLE anchor never relates to itself). TWEET/COMMENT fold in automatically
+# once social sources are ingested.
+_DEFAULT_TYPES = ["ARTICLE", "TWEET", "COMMENT"]
 
 
 class FeedNewsService:
@@ -45,12 +50,38 @@ class FeedNewsService:
         related_service: RelatedService,
         cms_client: CMSClient,
         settings: Settings,
+        cache: SlideCache | None = None,
     ) -> None:
         self.related = related_service
         self.cms_client = cms_client
         self.settings = settings
+        self.cache = cache
 
     async def slide(self, req: FeedNewsSlideRequest) -> FeedNewsSlideResponse:
+        # Cache lookup — the assembled slide is keyed by anchor + retrieval
+        # params. A hit skips the whole pipeline (2× kNN + rerank), which is
+        # what keeps the cross-encoder off the synchronous feed path.
+        cache_key: str | None = None
+        if self.cache is not None:
+            cache_key = SlideCache.make_key(
+                req.anchor_content_id,
+                req.k,
+                req.types,
+                req.exclude_ids,
+                rerank=True,
+            )
+            cached = await self.cache.get(cache_key)
+            if cached is not None:
+                try:
+                    resp = FeedNewsSlideResponse.model_validate_json(cached)
+                    feed_slide_cache_hits_total.inc()
+                    feed_news_requests_total.labels(status="success").inc()
+                    logger.info("feed_news_slide_cache_hit", anchor=req.anchor_content_id)
+                    return resp
+                except Exception as exc:
+                    logger.warning("feed_news_slide_cache_decode_failed", error=str(exc))
+            feed_slide_cache_misses_total.inc()
+
         with feed_news_duration.time():
             # 1. Anchor — fetch the basic record from CMS for the response payload.
             anchor_payload = await self.cms_client.get_content_item_basic(
@@ -83,6 +114,12 @@ class FeedNewsService:
             # 4. Truncate to the caller's k.
             final = items[: req.k]
 
+        resp = FeedNewsSlideResponse(anchor=anchor, related=final)
+
+        # Store for subsequent identical feed loads (short TTL).
+        if self.cache is not None and cache_key is not None:
+            await self.cache.set(cache_key, resp.model_dump_json())
+
         feed_news_requests_total.labels(status="success").inc()
         logger.info(
             "feed_news_slide_complete",
@@ -92,7 +129,7 @@ class FeedNewsService:
             after_rules=len(items),
             returned=len(final),
         )
-        return FeedNewsSlideResponse(anchor=anchor, related=final)
+        return resp
 
     @staticmethod
     def _anchor_from_payload(payload: dict) -> FeedNewsAnchor:

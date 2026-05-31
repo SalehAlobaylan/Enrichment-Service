@@ -120,9 +120,20 @@ class EmbedderWrapper:
             return_sparse=with_sparse,
             return_colbert_vecs=False,
         )
-        # BGE-M3 returns numpy arrays for dense and list[dict[str, float]] for
-        # sparse (lexical_weights). Normalize to plain Python types for JSON
-        # serialization downstream.
+        # BGE-M3 returns numpy arrays for dense and list[dict] for sparse
+        # (lexical_weights). With use_fp16=True the sparse WEIGHTS are numpy
+        # float16 scalars and the keys are numpy ints — neither is JSON
+        # serializable, so the CMS write-back (json.dumps) fails with
+        # "Object of type float16 is not JSON serializable". `.tolist()` already
+        # coerces dense to Python floats; the sparse dict must be coerced
+        # explicitly (keys → str, weights → float).
         dense = [d.tolist() for d in out["dense_vecs"]]
-        sparse = list(out["lexical_weights"]) if with_sparse else None
+        sparse = (
+            [
+                {str(token): float(weight) for token, weight in weights.items()}
+                for weights in out["lexical_weights"]
+            ]
+            if with_sparse
+            else None
+        )
         return {"dense": dense, "sparse": sparse}

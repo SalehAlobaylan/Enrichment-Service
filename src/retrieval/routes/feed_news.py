@@ -39,7 +39,12 @@ async def feed_news_slide(
         settings,
         reranker=model_manager.reranker,
     )
-    feed_service = FeedNewsService(related_service, cms_client, settings)
+    feed_service = FeedNewsService(
+        related_service,
+        cms_client,
+        settings,
+        cache=getattr(request.app.state, "slide_cache", None),
+    )
 
     try:
         return await feed_service.slide(body)

@@ -133,6 +133,16 @@ feed_news_duration = Histogram(
     buckets=[0.1, 0.2, 0.5, 1, 2, 5, 10],
 )
 
+feed_slide_cache_hits_total = Counter(
+    "enrichment_feed_slide_cache_hits_total",
+    "News-feed slide cache hits (served from Redis, pipeline skipped).",
+)
+
+feed_slide_cache_misses_total = Counter(
+    "enrichment_feed_slide_cache_misses_total",
+    "News-feed slide cache misses (full retrieve+rerank pipeline ran).",
+)
+
 ranking_rules_dropped_total = Counter(
     "enrichment_ranking_rules_dropped_total",
     "Items dropped by each ranking rule "

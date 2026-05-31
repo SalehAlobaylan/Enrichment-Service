@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.common.config import Settings
-from src.retrieval.schemas.feed_news import FeedNewsSlideRequest
+from src.retrieval.schemas.feed_news import (
+    FeedNewsAnchor,
+    FeedNewsSlideRequest,
+    FeedNewsSlideResponse,
+)
 from src.retrieval.schemas.related import RelatedItem, RelatedResponse
 from src.retrieval.services.feed_news import FeedNewsService
 
@@ -124,13 +128,15 @@ async def test_slide_applies_source_diversity_before_truncate(
 
 
 @pytest.mark.asyncio
-async def test_slide_default_types_to_tweet_and_comment(
+async def test_slide_default_types_include_article_tweet_comment(
     service: FeedNewsService, mock_related: AsyncMock
 ) -> None:
     mock_related.related.return_value = RelatedResponse(results=[])
     await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
     related_request = mock_related.related.call_args.args[0]
-    assert related_request.types == ["TWEET", "COMMENT"]
+    # ARTICLE included so related surfaces topically-similar news even with no
+    # tweets/comments; the anchor is excluded via exclude_ids.
+    assert related_request.types == ["ARTICLE", "TWEET", "COMMENT"]
 
 
 @pytest.mark.asyncio
@@ -168,3 +174,70 @@ async def test_slide_rerank_always_on(
     await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
     related_request = mock_related.related.call_args.args[0]
     assert related_request.rerank is True
+
+
+# ─── Slide cache (H1 — keeps the reranker off the read path) ──────────
+
+
+@pytest.mark.asyncio
+async def test_slide_cache_hit_skips_pipeline(
+    mock_related: AsyncMock, mock_cms: AsyncMock, settings: Settings
+) -> None:
+    """A cache hit returns the stored slide WITHOUT touching RelatedService
+    (the reranker) or CMS."""
+    cached = FeedNewsSlideResponse(
+        anchor=FeedNewsAnchor(
+            content_id="anchor-1",
+            type="ARTICLE",
+            title="cached",
+            excerpt=None,
+            source_name=None,
+            published_at=None,
+        ),
+        related=[
+            RelatedItem(
+                content_id="cached-r",
+                score=0.5,
+                content_type="TWEET",
+                sources=["dense"],
+            )
+        ],
+    )
+    cache = AsyncMock()
+    cache.get.return_value = cached.model_dump_json()
+    service = FeedNewsService(mock_related, mock_cms, settings, cache=cache)
+
+    resp = await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
+
+    assert resp.anchor.title == "cached"
+    assert [r.content_id for r in resp.related] == ["cached-r"]
+    mock_related.related.assert_not_called()
+    mock_cms.get_content_item_basic.assert_not_called()
+    cache.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_slide_cache_miss_runs_pipeline_and_stores(
+    mock_related: AsyncMock, mock_cms: AsyncMock, settings: Settings
+) -> None:
+    cache = AsyncMock()
+    cache.get.return_value = None  # miss
+    mock_related.related.return_value = RelatedResponse(
+        results=[
+            RelatedItem(
+                content_id="r0",
+                score=0.9,
+                content_type="TWEET",
+                sources=["dense"],
+                source_name="s0",
+            )
+        ]
+    )
+    service = FeedNewsService(mock_related, mock_cms, settings, cache=cache)
+
+    await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
+
+    mock_related.related.assert_awaited_once()
+    cache.set.assert_awaited_once()
+    stored_json = cache.set.call_args.args[1]
+    assert "r0" in stored_json
