@@ -16,6 +16,11 @@ structlog>=24.0.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0,<3.0
 
+# transformers MUST stay on 4.x. FlagEmbedding's reranker (FlagReranker.
+# compute_score) calls the tokenizer's `prepare_for_model`, which transformers
+# v5 removed → "XLMRobertaTokenizer has no attribute prepare_for_model" and
+# every rerank/news-slide call 500s. FlagEmbedding's own pin (<6) is too loose.
+transformers>=4.44.2,<5.0
 sentence-transformers>=3.0.0
 FlagEmbedding>=1.2.0
 
