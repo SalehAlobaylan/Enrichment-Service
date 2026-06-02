@@ -24,12 +24,16 @@ transformers>=4.44.2,<5.0
 sentence-transformers>=3.0.0
 FlagEmbedding>=1.2.0
 
-# Scrapling without Playwright — falls back to plain HTTP extraction.
-# Playwright is dev-only (requirements-dev.txt) to keep the prod image
-# small. Pages that genuinely need JS rendering return 503 from
-# /v1/extract in prod; if that turns into a real problem, add a
-# separate extraction worker deploy that includes Playwright.
-scrapling>=0.2.9
+# Single-URL extraction (/v1/extract): Scrapling stealth fetch (curl_cffi
+# browser TLS-impersonation gets past Cloudflare/Akamai bot walls — no
+# Playwright/Chromium needed). curl_cffi + browserforge are Scrapling's
+# fetcher-engine deps that its 0.4.x wheel FAILS to declare; their absence is
+# exactly what broke /v1/extract in prod, so we pin them explicitly. lxml
+# (also Scrapling's own dep) parses RSS/Atom feed XML CDATA-safely.
+scrapling>=0.4.0,<0.5
+curl_cffi>=0.7.0
+browserforge>=1.2.0
+lxml>=5.0.0
 
 openai>=1.50.0
 anthropic>=0.37.0

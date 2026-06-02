@@ -53,17 +53,31 @@ class ModelManager:
     async def warmup(self) -> None:
         loop = asyncio.get_event_loop()
 
-        logger.info("loading_models")
+        logger.info("loading_models", rerank_enabled=self.settings.RERANK_ENABLED)
 
-        embedder_task = loop.run_in_executor(self._executor, self.embedder.load)
-        reranker_task = loop.run_in_executor(self._executor, self.reranker.load)
+        # Load the embedder FIRST, on its own. It's the critical model
+        # (/ready gates only on it) and on a memory-constrained instance it
+        # must not load concurrently with the reranker — loading both fp16
+        # models in parallel doubles peak RAM and OOM-kills the embedder mid
+        # load (the symptom: reranker loads, embedder stays unloaded). Loading
+        # sequentially also lets /ready flip green as soon as the embedder is
+        # up, so Cranl's health probe passes before the (slower) reranker.
+        try:
+            await loop.run_in_executor(self._executor, self.embedder.load)
+            logger.info("model_loaded", model="embedder")
+        except Exception as result:  # noqa: BLE001
+            logger.error("model_load_failed", model="embedder", error=str(result))
 
-        results = await asyncio.gather(
-            embedder_task, reranker_task, return_exceptions=True
-        )
+        # Reranker is optional + best-effort: /v1/related and
+        # /v1/feed/news/slide degrade to RRF order without it. Skip loading it
+        # entirely when RERANK_ENABLED=false so a small instance can run the
+        # embedder alone (~3 GB fp16) instead of OOMing on embedder+reranker.
+        if not self.settings.RERANK_ENABLED:
+            logger.info("reranker_disabled_skipping_load")
+            return
 
-        for name, result in zip(["embedder", "reranker"], results):
-            if isinstance(result, Exception):
-                logger.error("model_load_failed", model=name, error=str(result))
-            else:
-                logger.info("model_loaded", model=name)
+        try:
+            await loop.run_in_executor(self._executor, self.reranker.load)
+            logger.info("model_loaded", model="reranker")
+        except Exception as result:  # noqa: BLE001
+            logger.error("model_load_failed", model="reranker", error=str(result))
