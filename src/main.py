@@ -24,7 +24,7 @@ from src.llm.clients.llm_cache import LLMCache
 from src.llm.routes import summarize, topic_label, translate
 from src.retrieval.clients.slide_cache import SlideCache
 from src.retrieval.models.manager import ModelManager
-from src.retrieval.routes import embed, feed_news, related
+from src.retrieval.routes import embed, feed_news, related, rerank
 
 
 @asynccontextmanager
@@ -143,15 +143,27 @@ app.add_middleware(RequestIDMiddleware)
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 # Routes — transcribe + embed_image have moved to Media-Service.
+#
+# ⚠️ TEMP WORKAROUND (Cranl fixed-RAM): role-based mounting. The reranker-role
+# instance loads ONLY the cross-encoder and serves ONLY /v1/rerank (+ health);
+# it must NOT mount the embed/retrieval/LLM routes (no embedder/LLM loaded).
+# Collapse back to a single role when one instance can hold both models.
 app.include_router(health.router)
-app.include_router(embed.router, prefix="/v1")
-app.include_router(related.router, prefix="/v1")  # Slice A — hybrid retrieval
-app.include_router(feed_news.router, prefix="/v1")  # Slice B — News-feed slide assembly
-app.include_router(extract.router, prefix="/v1")
-app.include_router(translate.router, prefix="/v1")
-app.include_router(summarize.router, prefix="/v1")
-app.include_router(topic_label.router, prefix="/v1")
-app.include_router(admin.router, prefix="/v1")
+
+if _cors_setting.ENRICHMENT_ROLE.strip().lower() == "reranker":
+    app.include_router(rerank.router, prefix="/v1")  # the only /v1 route here
+else:
+    # "api" role (default) — the full text-intelligence + retrieval surface.
+    # It calls the reranker over HTTP (or in-process in monolith mode), so it
+    # does NOT expose /v1/rerank itself.
+    app.include_router(embed.router, prefix="/v1")
+    app.include_router(related.router, prefix="/v1")  # Slice A — hybrid retrieval
+    app.include_router(feed_news.router, prefix="/v1")  # Slice B — News-feed slide
+    app.include_router(extract.router, prefix="/v1")
+    app.include_router(translate.router, prefix="/v1")
+    app.include_router(summarize.router, prefix="/v1")
+    app.include_router(topic_label.router, prefix="/v1")
+    app.include_router(admin.router, prefix="/v1")
 
 # Error handlers — TranscriptionError removed (it lives in Media-Service now).
 for exc_class in (CircuitOpenError, ExtractionError, EmbeddingError, LLMError):

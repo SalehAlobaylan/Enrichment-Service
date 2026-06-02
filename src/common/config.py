@@ -85,6 +85,25 @@ class Settings(BaseSettings):
     RERANK_ENABLED: bool = True
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
+    # ── TEMP WORKAROUND: reranker split deployment ──────────────────────────
+    # WHY THIS EXISTS: Cranl does NOT allow resizing a single app's RAM/CPU,
+    # and one instance can't hold BOTH BGE-M3 (~3GB fp16) AND
+    # bge-reranker-v2-m3 (~3GB fp16) — loading both OOM-kills the embedder.
+    # So we split the reranker onto its OWN Cranl deployment ("enrichment-
+    # reranker"), and the main ("api") instance calls it over HTTP.
+    #
+    #   ENRICHMENT_ROLE=reranker  → load ONLY the reranker, serve /v1/rerank.
+    #   ENRICHMENT_ROLE=api (default) + RERANKER_BASE_URL set → load ONLY the
+    #       embedder; the rerank stage calls the remote reranker service.
+    #   ENRICHMENT_ROLE=api + RERANKER_BASE_URL empty → monolith (load both),
+    #       the original single-instance behaviour for local ./start.sh.
+    #
+    # REMOVE THIS SPLIT once a single instance can hold both models (~8GB):
+    # clear RERANKER_BASE_URL everywhere, delete the enrichment-reranker app,
+    # and the monolith path takes over unchanged.
+    ENRICHMENT_ROLE: str = "api"  # "api" | "reranker"
+    RERANKER_BASE_URL: str = ""  # e.g. https://enrichment-reranker-xxxx.cranl.net
+
     RRF_K: int = 60
     RELATED_K_DENSE_DEFAULT: int = 50
     RELATED_K_SPARSE_DEFAULT: int = 50

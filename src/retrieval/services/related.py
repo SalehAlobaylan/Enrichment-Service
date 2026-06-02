@@ -208,10 +208,19 @@ class RelatedService:
         if not pair_items:
             return candidates
 
-        with rerank_duration.time():
-            scores = await asyncio.to_thread(
-                self.reranker.rerank, anchor_text, candidate_texts
-            )
+        # The reranker may be REMOTE (TEMP split deployment — see ModelManager)
+        # or in-process. Either way a failure here is non-fatal: reranking is
+        # enrichment, not a hard requirement — fall back to RRF order rather
+        # than failing the whole /related or news-slide request.
+        try:
+            with rerank_duration.time():
+                scores = await asyncio.to_thread(
+                    self.reranker.rerank, anchor_text, candidate_texts
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("rerank_scoring_failed", error=str(exc))
+            rerank_requests_total.labels(status="failure").inc()
+            return candidates
         rerank_requests_total.labels(status="success").inc()
 
         # Build new ordered list: reranked items first (by rerank score
