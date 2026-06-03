@@ -4,8 +4,8 @@ from html import unescape
 from urllib.parse import urljoin, urlparse
 
 from lxml import etree
-from scrapling.fetchers import Fetcher
 
+from src.common.middleware.error_handler import ExtractionError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import extraction_duration, extractions_total
 from src.extraction.schemas.extract import (
@@ -13,6 +13,38 @@ from src.extraction.schemas.extract import (
     FeedExtractResponse,
     FeedItem,
 )
+
+
+def _get_fetcher():
+    """Import Scrapling's Fetcher LAZILY (not at module top).
+
+    Scrapling eagerly imports Playwright deep in its import chain
+    (scrapling.fetchers → engines.static → toolbelt.convertor → playwright),
+    and Playwright is intentionally NOT in the production image (Phase 8 — it's
+    dev-only). A module-top `from scrapling.fetchers import Fetcher` therefore
+    crashes the WHOLE app at startup with `ModuleNotFoundError: No module named
+    'playwright'` — taking down embed/related/rerank/LLM too, including the
+    embedder-only and reranker-only split deployments that never call
+    /v1/extract.
+
+    Importing here keeps the app importable everywhere; /v1/extract then fails
+    at call time with a clear ExtractionError instead of killing the process.
+
+    NOTE: this is a PERMANENT, general fix — it is NOT part of the temporary
+    reranker-split workaround. It's the correct behaviour whether the service
+    runs as a monolith or split, because Playwright is dev-only in production
+    (Phase 8) regardless. KEEP it when the reranker split is collapsed back to
+    a single deployment.
+    """
+    try:
+        from scrapling.fetchers import Fetcher
+
+        return Fetcher
+    except Exception as exc:  # noqa: BLE001  (ModuleNotFoundError: playwright, etc.)
+        raise ExtractionError(
+            "Web extraction is unavailable in this deployment "
+            "(Scrapling/Playwright not installed)."
+        ) from exc
 
 
 def _looks_like_feed(head: bytes) -> bool:
@@ -65,7 +97,7 @@ class ExtractionService:
         return result
 
     def _do_extract(self, url: str, include_html: bool) -> ExtractResponse:
-        page = Fetcher.get(url, timeout=self.timeout_sec, stealthy_headers=True)
+        page = _get_fetcher().get(url, timeout=self.timeout_sec, stealthy_headers=True)
         raw = page.body or b""
 
         if _looks_like_feed(raw[:1024].lstrip().lower()):
@@ -83,7 +115,7 @@ class ExtractionService:
         return result
 
     def _do_extract_feed(self, url: str) -> FeedExtractResponse:
-        page = Fetcher.get(url, timeout=self.timeout_sec, stealthy_headers=True)
+        page = _get_fetcher().get(url, timeout=self.timeout_sec, stealthy_headers=True)
         raw = page.body or b""
 
         if _looks_like_feed(raw[:1024].lstrip().lower()):

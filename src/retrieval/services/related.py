@@ -208,10 +208,12 @@ class RelatedService:
         if not pair_items:
             return candidates
 
-        # The reranker may be REMOTE (TEMP split deployment — see ModelManager)
-        # or in-process. Either way a failure here is non-fatal: reranking is
-        # enrichment, not a hard requirement — fall back to RRF order rather
-        # than failing the whole /related or news-slide request.
+        # Degrade gracefully on any rerank failure: reranking is enrichment,
+        # not a hard requirement — fall back to RRF order rather than failing
+        # the whole /related or news-slide request. This is a PERMANENT,
+        # general safeguard (keep it whether or not the reranker is split out);
+        # it also happens to cover the extra failure mode the TEMP split adds
+        # (the reranker being a remote HTTP call — see ModelManager).
         try:
             with rerank_duration.time():
                 scores = await asyncio.to_thread(
