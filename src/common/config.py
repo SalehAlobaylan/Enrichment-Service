@@ -107,7 +107,12 @@ class Settings(BaseSettings):
     RRF_K: int = 60
     RELATED_K_DENSE_DEFAULT: int = 50
     RELATED_K_SPARSE_DEFAULT: int = 50
-    RERANK_INPUT_K: int = 30
+    # Candidates rescored by the cross-encoder per request. Lowered 30 → 8
+    # because the split reranker runs on a RAM/CPU-constrained Cranl instance
+    # (~2s/pair): 30 pairs took >59s and hit the ingress 504 + the client
+    # timeout, so rerank silently fell back to RRF. 8 pairs (~15s) finishes
+    # well under both. Raise back toward 30 once the reranker has real CPU.
+    RERANK_INPUT_K: int = 8
 
     FRESHNESS_DECAY_TWEET_DAYS: int = 2
     FRESHNESS_DECAY_COMMENT_DAYS: int = 2

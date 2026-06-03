@@ -29,7 +29,11 @@ class RerankerClient:
         base_url: str,
         token: str = "",
         model_name: str = "BAAI/bge-reranker-v2-m3",
-        timeout_sec: float = 30.0,
+        # 30s was too tight for the constrained reranker instance (it timed out
+        # before the cross-encoder finished, silently degrading to RRF). 50s
+        # gives headroom while staying under the ~60s gateway/ingress cap. With
+        # RERANK_INPUT_K lowered to ~8, a batch now finishes in ~15s anyway.
+        timeout_sec: float = 50.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token

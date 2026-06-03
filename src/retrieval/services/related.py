@@ -272,7 +272,10 @@ class RelatedService:
             parts.append(excerpt)
         if not parts and body:
             parts.append(body[:512])
-        return " ".join(parts)
+        # Cap the pair text — cross-encoder cost scales with sequence length,
+        # and the split reranker runs on a constrained CPU. Title+excerpt is
+        # plenty of signal; ~300 chars keeps each pair fast.
+        return " ".join(parts)[:300]
 
     @staticmethod
     def _rrf_fuse(
