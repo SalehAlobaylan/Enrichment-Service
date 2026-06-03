@@ -51,7 +51,13 @@ async def ready(request: Request, response: Response) -> ReadyResponse:
     models_status = model_manager.is_ready
     cms_reachable = await cms_client.health_check()
 
-    all_ready = model_manager.all_ready and cms_reachable
+    # The reranker-role split deployment (TEMP — see ModelManager) only serves
+    # /v1/rerank and never calls CMS, so its readiness must NOT gate on CMS —
+    # otherwise it reports not_ready forever (cms unreachable/unset) and Cranl
+    # treats the pod as unhealthy. Every other role keeps CMS in /ready.
+    role = getattr(model_manager, "role", "api")
+    requires_cms = role != "reranker"
+    all_ready = model_manager.all_ready and (cms_reachable or not requires_cms)
 
     if not all_ready:
         response.status_code = 503

@@ -15,15 +15,24 @@ import os
 
 
 def download_embedder(output_dir: str, model_name: str = "BAAI/bge-m3") -> None:
-    from sentence_transformers import SentenceTransformer
+    # CRITICAL: pre-cache via huggingface_hub.snapshot_download (HF hub cache
+    # layout), NOT SentenceTransformer(cache_folder=...). The RUNTIME loads
+    # BGE-M3 with FlagEmbedding's BGEM3FlagModel (see retrieval/models/
+    # embedder.py), which resolves weights through the HF hub cache keyed by
+    # `cache_dir`. SentenceTransformer's cache_folder uses a DIFFERENT on-disk
+    # layout, so a model pre-cached that way is invisible to FlagEmbedding —
+    # the container then re-downloads ~3GB ("Fetching 30 files") at startup,
+    # blowing the health-check window so a fresh deploy never goes ready.
+    # Mirroring download_reranker (same snapshot_download + cache_dir) makes the
+    # embedder genuinely pre-baked → instant load, no runtime download.
+    from huggingface_hub import snapshot_download
 
     print(f"Downloading embedding model: {model_name}")
-    model = SentenceTransformer(model_name, cache_folder=output_dir)
-    # Probe with an Arabic + English mix — the whole point of BGE-M3 is
-    # multilingual support, so verify the tokenizer handles non-Latin scripts
-    # before declaring the download complete.
-    test = model.encode(["test مرحبا"])
-    print(f"Embedding model downloaded. Dimensions: {len(test[0])}")
+    snapshot_download(
+        repo_id=model_name,
+        cache_dir=output_dir,
+    )
+    print("Embedding model downloaded.")
 
 
 def download_reranker(
