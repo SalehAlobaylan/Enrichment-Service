@@ -9,7 +9,7 @@ from src.retrieval.services.embedding import EmbeddingService
 @pytest.fixture
 def mock_embedder() -> MagicMock:
     embedder = MagicMock(spec=EmbedderWrapper)
-    embedder.model_name = "BAAI/bge-m3"
+    embedder.model_name = "Qwen/Qwen3-Embedding-0.6B"
     embedder.dimensions = 1024
     # BGE-M3 returns dict shape: {dense: [[1024]], sparse: [{token: weight}] | None}.
     # Default fixture mimics the with_sparse=True path.
@@ -37,7 +37,7 @@ async def test_embed_returns_vectors(service: EmbeddingService) -> None:
     result = await service.embed(["hello", "world"])
     assert len(result.embeddings) == 2
     assert result.dimensions == 1024
-    assert result.model == "BAAI/bge-m3"
+    assert result.model == "Qwen/Qwen3-Embedding-0.6B"
 
 
 @pytest.mark.asyncio

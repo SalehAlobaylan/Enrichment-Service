@@ -39,9 +39,9 @@ class EmbeddingService:
         if extract_tags and self.tagger and texts:
             tags_task = asyncio.create_task(self.tagger.extract(texts[0]))
 
-        # Sparse is opt-in but cheap — same BGE-M3 forward pass as dense.
-        # Always-on when the caller wants to enable hybrid retrieval on this
-        # content_id.
+        # Qwen is dense-only — `extract_sparse` is a no-op kept for call-site
+        # compatibility; the embedder always returns sparse=None and the CMS
+        # `embedding_sparse` column stays NULL.
         with embedding_duration.time():
             encoded = await asyncio.to_thread(
                 self.embedder.encode, texts, extract_sparse
@@ -123,6 +123,7 @@ class EmbeddingService:
                     vector,
                     topic_tags=topic_tags,
                     embedding_sparse=sparse,
+                    model=self.embedder.model_name,
                 )
                 logger.info(
                     "embedding_writeback_complete",

@@ -154,8 +154,11 @@ if _cors_setting.ENRICHMENT_ROLE.strip().lower() == "reranker":
     app.include_router(rerank.router, prefix="/v1")  # the only /v1 route here
 else:
     # "api" role (default) — the full text-intelligence + retrieval surface.
-    # It calls the reranker over HTTP (or in-process in monolith mode), so it
-    # does NOT expose /v1/rerank itself.
+    # It also exposes /v1/rerank as a thin pass-through to the cross-encoder
+    # (in split mode via the RerankerClient → reranker deployment; in-process in
+    # monolith mode). Phase 13 uses it so CMS can rerank related *stories* on the
+    # on_demand News feed, keyed on the featured story's headline.
+    app.include_router(rerank.router, prefix="/v1")
     app.include_router(embed.router, prefix="/v1")
     app.include_router(related.router, prefix="/v1")  # Slice A — hybrid retrieval
     app.include_router(feed_news.router, prefix="/v1")  # Slice B — News-feed slide

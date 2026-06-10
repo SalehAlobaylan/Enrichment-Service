@@ -151,7 +151,12 @@ class RelatedService:
         # text path — caller supplied raw text; use it for both embedding
         # AND reranking.
         encoded = await asyncio.to_thread(self.embedder.encode, [req.text], True)
-        return encoded["dense"][0], encoded["sparse"][0], req.text
+        # Qwen is dense-only → encoded["sparse"] is None. Degrade to dense-only
+        # by passing an empty sparse map; CMS short-circuits the sparse kNN to
+        # 0 hits and RRF falls through to dense, same as a missing-sparse anchor.
+        sparse_maps = encoded["sparse"]
+        sparse_q = sparse_maps[0] if sparse_maps else {}
+        return encoded["dense"][0], sparse_q, req.text
 
     async def _rerank_candidates(
         self, anchor_text: str, candidates: list[RelatedItem]

@@ -1,38 +1,29 @@
-"""Text embedder wrapper — BAAI/bge-m3 dense + sparse via FlagEmbedding.
+"""Text embedder wrapper — Qwen/Qwen3-Embedding-0.6B (dense-only) via
+sentence-transformers.
 
-BGE-M3 is multilingual (Arabic + English first-class) and produces two
-complementary outputs from one forward pass:
-  - Dense (1024-dim float vector): semantic similarity. Catches paraphrase.
-  - Sparse (learned lexical weights over a 250002-token vocab): exact-name
-    + morphology matching. Strictly better than BM25 for Arabic.
+Qwen3-Embedding-0.6B is multilingual (strong Arabic + English) and produces a
+single 1024-dim dense vector per input — no sparse/lexical output. Wahb moved
+off BGE-M3's hybrid (dense + sparse) to Qwen dense-only: simpler, better Arabic
+retrieval in practice, and one model load. The CMS `embedding_sparse` column is
+left NULL (retired in a follow-up migration).
 
-Both are needed for hybrid retrieval (Slice A). FlagEmbedding's
-BGEM3FlagModel is the official BAAI wrapper that exposes both modes; it
-uses sentence-transformers under the hood for the dense path, so there's
-no duplicate model load.
-
-Memory footprint with `use_fp16=True`:
-- BGE-M3 fp16: ~3 GB loaded (vs ~6 GB fp32) — negligible quality loss for retrieval
-- Cold start on CPU: ~60-90s
+Memory footprint:
+- Qwen3-Embedding-0.6B fp32: ~2.4 GB loaded; fp16 (GPU only) ~1.2 GB
+- CPU cold start: ~20-40s
 """
 from src.common.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-# BGE-M3 was trained on inputs up to 8192 tokens — well beyond what
-# Wahb's content items will ever feed it. The cap stays as a defensive
-# truncation for malformed input.
+# Qwen3-Embedding-0.6B handles up to 32k tokens — far beyond any Wahb content
+# item. The cap is a defensive char-truncation against malformed input.
 MAX_TEXT_LENGTH = 8192
-
-# BGE-M3 vocabulary size — matches the `sparsevec(250002)` column type in
-# the CMS schema (migration 20260522000000_bge_m3_retrieval.sql).
-BGE_M3_SPARSE_DIM = 250002
 
 
 class EmbedderWrapper:
     def __init__(
         self,
-        model_name: str = "BAAI/bge-m3",
+        model_name: str = "Qwen/Qwen3-Embedding-0.6B",
         cache_folder: str = "./models",
         use_fp16: bool = True,
     ) -> None:
@@ -52,8 +43,9 @@ class EmbedderWrapper:
 
     @property
     def sparse_dim(self) -> int:
-        """Vocabulary size of BGE-M3's sparse output. Matches sparsevec(N) in CMS."""
-        return BGE_M3_SPARSE_DIM
+        """Qwen is dense-only — no sparse/lexical output. Kept for interface
+        compatibility with the former BGE-M3 wrapper; always 0."""
+        return 0
 
     @property
     def is_loaded(self) -> bool:
@@ -63,77 +55,62 @@ class EmbedderWrapper:
         if self._model is not None:
             return
 
-        from FlagEmbedding import BGEM3FlagModel
+        import torch
+        from sentence_transformers import SentenceTransformer
 
         logger.info(
             "loading_embedder",
             model_name=self._model_name,
-            use_fp16=self._use_fp16,
-            backend="BGEM3FlagModel",
+            backend="SentenceTransformer",
         )
-        self._model = BGEM3FlagModel(
+        self._model = SentenceTransformer(
             self._model_name,
-            use_fp16=self._use_fp16,
-            cache_dir=self._cache_folder,
+            cache_folder=self._cache_folder,
         )
+        # fp16 only helps on GPU; PyTorch CPU lacks half-precision kernels for
+        # many ops, so keep fp32 on CPU (Cranl is CPU-only).
+        if self._use_fp16 and torch.cuda.is_available():
+            self._model = self._model.half()
 
-        # Probe with an Arabic + English mix to confirm tokenizer handles
-        # non-Latin scripts (the whole point of switching to BGE-M3) and to
-        # bind dense dimensions before serving traffic.
+        # Probe with an Arabic + English mix to confirm the multilingual
+        # tokenizer handles non-Latin scripts and to bind the dense dimension
+        # before serving traffic.
         probe = self._model.encode(
             ["test مرحبا"],
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
         )
-        self._dimensions = len(probe["dense_vecs"][0])
+        self._dimensions = len(probe[0])
         logger.info(
             "embedder_loaded",
             model_name=self._model_name,
             dimensions=self._dimensions,
-            sparse_dim=BGE_M3_SPARSE_DIM,
         )
 
     def encode(
         self,
         texts: list[str],
-        with_sparse: bool = True,
+        with_sparse: bool = False,  # noqa: ARG002 — kept for call-site compat
     ) -> dict[str, list]:
-        """Encode texts to dense (+ optional sparse) vectors.
+        """Encode texts to L2-normalized dense vectors.
 
         Returns:
             {
-                "dense":  list[list[float]],            # always (n_texts, 1024)
-                "sparse": list[dict[str, float]] | None # token_id_str → weight, or None
+                "dense":  list[list[float]],  # (n_texts, 1024), L2-normalized
+                "sparse": None                # Qwen is dense-only
             }
 
-        with_sparse=False is for read-only paths like /v1/embed/query where
-        only the dense vector matters; saves a small amount of compute.
+        `with_sparse` is accepted for call-site compatibility with the former
+        BGE-M3 wrapper but ignored — Qwen produces no sparse output.
         """
         if self._model is None:
             raise RuntimeError("Embedding model is not loaded. Call load() first.")
 
         truncated = [text[:MAX_TEXT_LENGTH] for text in texts]
-        out = self._model.encode(
+        vectors = self._model.encode(
             truncated,
-            return_dense=True,
-            return_sparse=with_sparse,
-            return_colbert_vecs=False,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
         )
-        # BGE-M3 returns numpy arrays for dense and list[dict] for sparse
-        # (lexical_weights). With use_fp16=True the sparse WEIGHTS are numpy
-        # float16 scalars and the keys are numpy ints — neither is JSON
-        # serializable, so the CMS write-back (json.dumps) fails with
-        # "Object of type float16 is not JSON serializable". `.tolist()` already
-        # coerces dense to Python floats; the sparse dict must be coerced
-        # explicitly (keys → str, weights → float).
-        dense = [d.tolist() for d in out["dense_vecs"]]
-        sparse = (
-            [
-                {str(token): float(weight) for token, weight in weights.items()}
-                for weights in out["lexical_weights"]
-            ]
-            if with_sparse
-            else None
-        )
-        return {"dense": dense, "sparse": sparse}
+        dense = [v.tolist() for v in vectors]
+        return {"dense": dense, "sparse": None}

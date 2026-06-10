@@ -17,9 +17,10 @@ class Settings(BaseSettings):
     CMS_BASE_URL: str = "http://localhost:8080"
 
     # Models — text embedder only. Whisper + CLIP moved to Media-Service.
-    # BGE-M3 is multilingual (Arabic + English first-class), 1024-dim dense,
-    # forward-compatible with sparse output for hybrid retrieval (Slice A).
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
+    # Qwen3-Embedding-0.6B is multilingual (strong Arabic + English), 1024-dim
+    # dense, dense-only (no sparse). Replaced BGE-M3 — better Arabic retrieval
+    # in practice and a single, lighter model load.
+    EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-0.6B"
     MODELS_DIR: str = "./models"
 
     # Circuit Breaker

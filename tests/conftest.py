@@ -30,9 +30,9 @@ def mock_model_manager() -> MagicMock:
     manager.is_ready = {"embedder": True, "reranker": True}
     manager.all_ready = True
 
-    # Embedder mock — BGE-M3 (1024-dim, multilingual) after Slice 0.
+    # Embedder mock — Qwen3-Embedding-0.6B (1024-dim, multilingual, dense-only).
     manager.embedder.is_loaded = True
-    manager.embedder.model_name = "BAAI/bge-m3"
+    manager.embedder.model_name = "Qwen/Qwen3-Embedding-0.6B"
     manager.embedder.dimensions = 1024
 
     # Reranker mock — bge-reranker-v2-m3 (Slice B). Default scores are

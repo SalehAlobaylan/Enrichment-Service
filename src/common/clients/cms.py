@@ -86,14 +86,17 @@ class CMSClient:
         embedding: list[float],
         topic_tags: list[str] | None = None,
         embedding_sparse: dict[str, float] | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
-        """Write BGE-M3 text embedding to CMS.
+        """Write text embedding to CMS.
 
-        embedding         — 1024-dim dense vector (required after Slice 0)
-        embedding_sparse  — BGE-M3 lexical weights {token_id_str: weight}.
-                            Forward-compat — Slice A will start populating it
-                            once FlagEmbedding lands. Today always omitted.
+        embedding         — 1024-dim dense vector
+        embedding_sparse  — legacy BGE-M3 lexical weights; Qwen is dense-only,
+                            so this is always omitted now
         topic_tags        — optional topic tags extracted by tagging service
+        model             — embedder name (provenance). CMS records it on the
+                            row; vectors written WITHOUT it are treated as
+                            suspect and re-embedded by the reconcile sweep.
         """
         payload: dict[str, Any] = {
             "embedding": embedding,
@@ -101,6 +104,8 @@ class CMSClient:
         }
         if embedding_sparse:
             payload["embedding_sparse"] = embedding_sparse
+        if model:
+            payload["model"] = model
         return await self._request(
             "PATCH",
             f"/internal/content-items/{content_id}/embedding",

@@ -3,7 +3,7 @@
 Whisper + CLIP live in Media-Service's download script. This pre-caches the
 two text-side models hosted by Enrichment:
 
-  - BAAI/bge-m3:                multilingual text embedder (dense + sparse)
+  - Qwen/Qwen3-Embedding-0.6B:  multilingual text embedder (dense-only)
   - BAAI/bge-reranker-v2-m3:    cross-encoder reranker (Slice B)
 
 Usage:
@@ -14,17 +14,16 @@ import argparse
 import os
 
 
-def download_embedder(output_dir: str, model_name: str = "BAAI/bge-m3") -> None:
-    # CRITICAL: pre-cache via huggingface_hub.snapshot_download (HF hub cache
-    # layout), NOT SentenceTransformer(cache_folder=...). The RUNTIME loads
-    # BGE-M3 with FlagEmbedding's BGEM3FlagModel (see retrieval/models/
-    # embedder.py), which resolves weights through the HF hub cache keyed by
-    # `cache_dir`. SentenceTransformer's cache_folder uses a DIFFERENT on-disk
-    # layout, so a model pre-cached that way is invisible to FlagEmbedding —
-    # the container then re-downloads ~3GB ("Fetching 30 files") at startup,
-    # blowing the health-check window so a fresh deploy never goes ready.
-    # Mirroring download_reranker (same snapshot_download + cache_dir) makes the
-    # embedder genuinely pre-baked → instant load, no runtime download.
+def download_embedder(
+    output_dir: str, model_name: str = "Qwen/Qwen3-Embedding-0.6B"
+) -> None:
+    # Pre-cache via huggingface_hub.snapshot_download into the HF hub cache
+    # layout keyed by `cache_dir`. The runtime loads the embedder with
+    # SentenceTransformer(cache_folder=MODELS_DIR), which resolves weights
+    # through that same HF hub cache (ST forwards cache_folder → snapshot_download
+    # cache_dir under the hood), so the model is genuinely pre-baked → instant
+    # load, with no ~2GB runtime re-download that would blow the health-check
+    # window on a fresh deploy.
     from huggingface_hub import snapshot_download
 
     print(f"Downloading embedding model: {model_name}")
@@ -57,7 +56,9 @@ def download_reranker(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download Enrichment-Service ML models")
     parser.add_argument("--output", default="./models", help="Output directory for models")
-    parser.add_argument("--embedding-model", default="BAAI/bge-m3", help="Embedding model")
+    parser.add_argument(
+        "--embedding-model", default="Qwen/Qwen3-Embedding-0.6B", help="Embedding model"
+    )
     parser.add_argument(
         "--reranker-model",
         default="BAAI/bge-reranker-v2-m3",
