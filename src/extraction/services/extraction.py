@@ -7,6 +7,7 @@ from lxml import etree
 
 from src.common.middleware.error_handler import ExtractionError
 from src.common.utils.logging import get_logger
+from src.common.utils.url_guard import UnsafeURLError, validate_public_url
 from src.common.utils.metrics import extraction_duration, extractions_total
 from src.extraction.schemas.extract import (
     ExtractResponse,
@@ -89,6 +90,14 @@ class ExtractionService:
     def __init__(self, timeout_sec: int = 30):
         self.timeout_sec = timeout_sec
 
+    @staticmethod
+    def _guard_url(url: str) -> None:
+        """Reject SSRF-unsafe URLs before any server-side fetch."""
+        try:
+            validate_public_url(url)
+        except UnsafeURLError as exc:
+            raise ExtractionError(f"Refusing to fetch unsafe URL: {exc}") from exc
+
     async def extract(self, url: str, include_html: bool = False) -> ExtractResponse:
         with extraction_duration.time():
             result = await asyncio.to_thread(self._do_extract, url, include_html)
@@ -97,6 +106,7 @@ class ExtractionService:
         return result
 
     def _do_extract(self, url: str, include_html: bool) -> ExtractResponse:
+        self._guard_url(url)
         page = _get_fetcher().get(url, timeout=self.timeout_sec, stealthy_headers=True)
         raw = page.body or b""
 
@@ -115,6 +125,7 @@ class ExtractionService:
         return result
 
     def _do_extract_feed(self, url: str) -> FeedExtractResponse:
+        self._guard_url(url)
         page = _get_fetcher().get(url, timeout=self.timeout_sec, stealthy_headers=True)
         raw = page.body or b""
 
@@ -149,7 +160,17 @@ class ExtractionService:
     def _parse_feed(self, url: str, raw: bytes) -> tuple[list[dict], str | None]:
         """Parse every <item>/<entry>. Returns (items, site_name); ([], None) if not a feed."""
         try:
-            root = etree.fromstring(raw, parser=etree.XMLParser(recover=True))
+            # Harden against XXE: a malicious feed can declare SYSTEM entities
+            # (e.g. file:///etc/passwd) whose expanded contents would otherwise
+            # be echoed back in the returned item text. Disable entity
+            # resolution, DTD loading and network access during parse.
+            parser = etree.XMLParser(
+                recover=True,
+                resolve_entities=False,
+                no_network=True,
+                load_dtd=False,
+            )
+            root = etree.fromstring(raw, parser=parser)
         except Exception:  # noqa: BLE001
             return [], None
         if root is None:
