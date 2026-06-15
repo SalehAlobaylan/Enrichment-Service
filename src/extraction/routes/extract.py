@@ -8,8 +8,11 @@ from src.extraction.schemas.extract import (
     ExtractRequest,
     ExtractResponse,
     FeedExtractResponse,
+    TelegramChannelRequest,
+    TelegramChannelResponse,
 )
 from src.extraction.services.extraction import ExtractionService
+from src.extraction.services.telegram_channel import TelegramChannelService
 
 logger = get_logger(__name__)
 router = APIRouter(dependencies=[Depends(verify_service_token)])
@@ -44,3 +47,25 @@ async def extract_feed(body: ExtractRequest, request: Request) -> FeedExtractRes
         extractions_total.labels(status="failure").inc()
         logger.error("feed_extraction_failed", url=body.url, error=str(exc))
         raise ExtractionError(f"Feed extraction failed: {exc}") from exc
+
+
+@router.post("/extract/telegram", response_model=TelegramChannelResponse)
+async def extract_telegram(
+    body: TelegramChannelRequest, request: Request
+) -> TelegramChannelResponse:
+    """Scrape a Telegram channel's public preview (t.me/s/<username>).
+
+    Powers Aggregation's Source Intelligence forward-graph for Telegram —
+    returns recent posts + forwarded/mentioned channels + subscriber count.
+    """
+    settings = request.app.state.settings
+    service = TelegramChannelService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+
+    try:
+        return await service.fetch(body.username)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("telegram_extraction_failed", username=body.username, error=str(exc))
+        raise ExtractionError(f"Telegram extraction failed: {exc}") from exc
