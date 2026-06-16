@@ -20,7 +20,10 @@ class CMSClient:
             if raw_base_url.endswith("/internal")
             else raw_base_url
         )
-        self.token = settings.CMS_SERVICE_TOKEN
+        # Token CMS's /internal/* middleware checks. Fall back to the shared
+        # service token so the documented single-token dev setup works even when
+        # CMS_SERVICE_TOKEN isn't set explicitly (matches inbound-auth behaviour).
+        self.token = settings.CMS_SERVICE_TOKEN or settings.service_auth_token
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=settings.CB_FAILURE_THRESHOLD,
             reset_timeout_sec=settings.CB_RESET_TIMEOUT_SEC,

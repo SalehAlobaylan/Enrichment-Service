@@ -10,9 +10,12 @@ from src.extraction.schemas.extract import (
     FeedExtractResponse,
     TelegramChannelRequest,
     TelegramChannelResponse,
+    TwitterProfileRequest,
+    TwitterProfileResponse,
 )
 from src.extraction.services.extraction import ExtractionService
 from src.extraction.services.telegram_channel import TelegramChannelService
+from src.extraction.services.twitter_profile import TwitterProfileService
 
 logger = get_logger(__name__)
 router = APIRouter(dependencies=[Depends(verify_service_token)])
@@ -69,3 +72,25 @@ async def extract_telegram(
         extractions_total.labels(status="failure").inc()
         logger.error("telegram_extraction_failed", username=body.username, error=str(exc))
         raise ExtractionError(f"Telegram extraction failed: {exc}") from exc
+
+
+@router.post("/extract/twitter", response_model=TwitterProfileResponse)
+async def extract_twitter(
+    body: TwitterProfileRequest, request: Request
+) -> TwitterProfileResponse:
+    """Scrape an X profile's public syndication timeline.
+
+    Powers Aggregation's Source Intelligence interaction-graph (retweet/quote/
+    mention edges + followers) and X ingestion/preview (full recent tweets).
+    """
+    settings = request.app.state.settings
+    service = TwitterProfileService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+
+    try:
+        return await service.fetch(body.username)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("twitter_extraction_failed", username=body.username, error=str(exc))
+        raise ExtractionError(f"Twitter extraction failed: {exc}") from exc
