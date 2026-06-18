@@ -1,50 +1,94 @@
 # Enrichment-Service
 
-Python service for transcription (Whisper), text embeddings, URL extraction, and LLM translation/summarization. **Aggregation** and **CMS** call it over HTTP; it can write results back to CMS when a `content_id` is supplied.
+The text-intelligence and retrieval brain of the Wahb platform. Owns text embeddings, LLM-backed ops (translate, summarize, topic-label, chapter generation), the cross-encoder reranker, hybrid-retrieval orchestration, News-feed slide assembly, and stealth web/feed extraction. **Aggregation** and **CMS** call it over HTTP; every AI endpoint can write its result back to CMS when a `content_id` is supplied, or run statelessly as a tool.
 
-## Run locally
+It does **not** transcribe audio, embed images, run FFmpeg, orchestrate the pipeline, or serve user-facing traffic — Whisper + CLIP belong to [Media-Service](../Media-Service).
+
+**Port:** 5050 · **Deployment:** internal-only (Cranl) · **Stack:** Python 3.11+, FastAPI, sentence-transformers, Scrapling
+
+> Full feature, architecture, and endpoint reference: [`../docs/enrichment-service.md`](../docs/enrichment-service.md). Product intent: [`../docs/PRD.md`](../docs/PRD.md).
+
+## What it does
+
+- **Text embedding** (`/v1/embed`, `/v1/embed/query`) — `Qwen/Qwen3-Embedding-0.6B`, 1024-dim dense (multilingual, strong Arabic) for pgvector search + story clustering.
+- **LLM text ops** (`/v1/translate`, `/v1/summarize`, `/v1/topics/label`, `/v1/chapters/generate`) — multi-provider with a Gemini → DeepSeek default chain and a Redis response cache.
+- **Reranking** (`/v1/rerank`) — `BAAI/bge-reranker-v2-m3` cross-encoder.
+- **Retrieval** (`/v1/related`, `/v1/feed/news/slide`) — hybrid kNN + RRF fusion and News-feed slide assembly.
+- **Extraction** (`/v1/extract`, `/extract/{feed,telegram,twitter}`) — Scrapling + Playwright stealth.
+
+## Run Locally
 
 ```bash
 cp .env.example .env
-make dev
+make dev          # creates .venv, installs deps + Playwright Chromium, starts API on :5050
 ```
 
-`make dev` creates `.venv` on first run, installs dependencies, installs Playwright Chromium, and starts the API on `http://localhost:5050`.
+- **Health:** `GET /health`, `GET /ready` — no auth
+- **API:** `/v1/*` — requires `Authorization: Bearer <SERVICE_AUTH_TOKEN>`
+- **Metrics:** `GET /metrics` — Prometheus (`enrichment_*`)
 
-- **Health:** `GET /health` — no auth  
-- **API:** `GET/POST /v1/...` — `Authorization: Bearer <SERVICE_AUTH_TOKEN>`
-
-## Environment (minimum)
-
-| Variable | Purpose |
-|----------|---------|
-| `SERVICE_AUTH_TOKEN` | Required on `/v1/*` |
-| `CMS_BASE_URL` | CMS base URL for write-back |
-| `CMS_SERVICE_TOKEN` | Token for CMS `/internal/*` calls |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Translate/summarize (per `LLM_PROVIDER`) |
-
-Optional: `PORT` (default **5050**), `WHISPER_*`, `MODELS_DIR`, `LOG_LEVEL`. Full list: `../context/Enrichment_Service_Context_Requirements.md`.
-
-## Docker
+### Docker
 
 ```bash
-make docker-up
-# or: make docker-build
+make docker-up        # or: make docker-build
 ```
 
-Docker and health checks now use `PORT` consistently, defaulting to **5050**.
+## Configuration
+
+Env is for boot-time infrastructure only. Retrieval **tuning knobs** (`RRF_K`, `RELATED_K_*`, `RERANK_INPUT_K`, `FRESHNESS_DECAY_*`, `NEWS_MAX_PER_SOURCE`) are code defaults, deliberately kept out of `.env.example` — env override is an emergency escape hatch (Config Discipline). See `.env.example` for the full list.
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `SERVICE_AUTH_TOKEN` | prod | — | Bearer token for `/v1/*` (falls back to `ENRICHMENT_SERVICE_TOKEN` / `CMS_SERVICE_TOKEN`) |
+| `CMS_BASE_URL` | yes | http://localhost:8080 | CMS for `content_id` write-back |
+| `CMS_SERVICE_TOKEN` | yes | — | Token for CMS `/internal/*` writes |
+| `PORT` | no | 5050 | HTTP port |
+| `ENV` | no | development | `production` makes missing keys/token fatal |
+| `EMBEDDING_MODEL` | no | `Qwen/Qwen3-Embedding-0.6B` | Text embedder selector |
+| `RERANKER_MODEL` | no | `BAAI/bge-reranker-v2-m3` | Cross-encoder selector |
+| `RERANK_ENABLED` | no | true | Reranker toggle |
+| `MODELS_DIR` | no | ./models | Model cache dir |
+| `LLM_PROVIDER` | no | gemini | Primary LLM provider |
+| `LLM_MODEL` | no | gemini-3.5-flash | Primary model |
+| `LLM_FALLBACK_PROVIDERS` | no | deepseek | CSV fallback chain |
+| `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | per provider | — | Provider keys (missing key is fatal in prod) |
+| `LLM_CACHE_ENABLED` / `LLM_CACHE_TTL_SEC` | no | true / 604800 | LLM response cache (7-day TTL) |
+| `FEED_SLIDE_CACHE_ENABLED` / `FEED_SLIDE_CACHE_TTL_SEC` | no | true / 300 | News-slide read cache |
+| `REDIS_URL` / `LLM_CACHE_DB` | no | redis://localhost:6379 / 1 | LLM + slide cache Redis |
+| `ENRICHMENT_ROLE` | no | api | `api` or `reranker` (split deploy — see below) |
+| `RERANKER_BASE_URL` | no | — | Remote reranker URL when `role=api` is split |
+| `EXTRACT_TIMEOUT_SEC` | no | 30 | Scrapling timeout |
+| `CB_FAILURE_THRESHOLD` / `CB_RESET_TIMEOUT_SEC` / `CB_HALF_OPEN_REQUESTS` | no | 5 / 30 / 3 | CMS circuit breaker |
+
+**Referenced in code but not in `.env.example`:** `CORS_ALLOWED_ORIGINS` (CSV; "" disables CORS), and `TWITTER_GQL_USER_BY_SCREENNAME` / `TWITTER_GQL_USER_TWEETS` (GraphQL endpoint IDs for `/v1/extract/twitter`).
+
+## Patterns
+
+- **`content_id` write-back** — every AI endpoint accepts an optional `content_id`; if present, results are written to CMS via `/internal` and the outcome is surfaced via `write_back_status` / `write_back_error`. Absent → stateless tool mode.
+- **Reranker split deploy** — one Cranl instance can't hold both the embedder and the reranker in fixed RAM. `ENRICHMENT_ROLE=reranker` loads only the cross-encoder and serves only `/v1/rerank`; `ENRICHMENT_ROLE=api` + `RERANKER_BASE_URL` loads only the embedder and calls the remote reranker over HTTP; `api` with no `RERANKER_BASE_URL` is the local monolith (loads both).
+- **Redis db conventions** — db=0 Aggregation BullMQ · **db=1 Enrichment LLM + slide cache (this service)** · db=2 Media arq queue.
 
 ## Commands
 
-| Command | |
-|---------|---|
+| Command | Purpose |
+|---------|---------|
+| `make dev` | Dev server with reload (:5050) |
 | `make run` | Production-style local run |
-| `make dev` | Dev server with reload |
-| `make install` / `make install-dev` | Install runtime or dev deps into `.venv` |
-| `make test` | Tests |
+| `make install` / `make install-dev` | Install runtime / dev deps into `.venv` |
+| `make test` / `make test-unit` / `make test-integration` | Tests |
+| `make test-coverage` | Coverage report |
 | `make lint` / `make format` | Ruff |
-| `make download-models` | Pre-download Whisper + embedding models |
+| `make download-models` | Pre-download embedder + reranker |
 
-## Contracts & details
+## Project Structure
 
-Endpoint table, error codes, circuit breaker, and integration with Aggregation/CMS: **`context/Enrichment_Service_Context_Requirements.md`** at the repo root.
+```
+src/
+├── main.py            # app + role-based router mounting, middleware, metrics
+├── common/            # config, CMS client, middleware, health/admin routes
+├── retrieval/         # embed, related, feed_news, rerank + sentence-transformers ModelManager
+├── llm/               # translate, summarize, topic_label, chapters + LLMClient + Redis cache
+└── extraction/        # Scrapling routes (URL / feed / telegram / twitter)
+tests/                 # unit + integration
+scripts/               # model download, ops helpers
+```

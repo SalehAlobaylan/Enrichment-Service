@@ -1,7 +1,8 @@
-"""POST /v1/related — hybrid retrieval endpoint (Slice A).
+"""POST /v1/related — related-content retrieval endpoint.
 
 Embeds the query (or fetches stored embeddings by content_id), fans out to
-CMS for dense + sparse kNN in parallel, fuses via RRF, returns ranked items.
+CMS dense kNN, optionally folds in legacy sparse hits when present, reranks,
+and returns ranked items.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request
 

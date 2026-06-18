@@ -1,8 +1,8 @@
 """Model manager for Enrichment-Service.
 
-This service hosts two text-side models: the BGE-M3 embedder (dense + sparse,
-for retrieval kNN) and the bge-reranker-v2-m3 cross-encoder (for refining top
-candidates). Whisper transcription + CLIP image embedding live in Media-Service.
+This service hosts two text-side models: the Qwen3 dense embedder (retrieval
+kNN) and the bge-reranker-v2-m3 cross-encoder (for refining top candidates).
+Whisper transcription + CLIP image embedding live in Media-Service.
 
 ⚠️  TEMP WORKAROUND (Cranl fixed-instance-RAM limit) — role split:
 Cranl won't let us resize one app's RAM, and a single instance can't hold both

@@ -81,7 +81,7 @@ async def models(request: Request) -> ModelsResponse:
 
     Whisper + CLIP are reported by Media-Service's /v1/models endpoint.
     Enrichment hosts:
-      - embedder: BGE-M3 (dense + sparse text vectors)
+      - embedder: Qwen3-Embedding-0.6B (1024-dim dense text vectors, dense-only)
       - reranker: bge-reranker-v2-m3 (cross-encoder for /v1/feed/news/slide)
     """
     return ModelsResponse(models=_model_items(request.app.state.model_manager))

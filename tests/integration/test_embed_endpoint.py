@@ -16,7 +16,7 @@ def test_embed_success(client: TestClient, auth_headers: dict[str, str]) -> None
     data = resp.json()
     assert len(data["embeddings"]) == 1
     assert data["dimensions"] == 1024
-    assert data["model"] == "BAAI/bge-m3"
+    assert data["model"] == "Qwen/Qwen3-Embedding-0.6B"
 
 
 def test_embed_query_success(client: TestClient, auth_headers: dict[str, str]) -> None:

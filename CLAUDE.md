@@ -10,12 +10,11 @@
 
 ## What This Is
 
-Python microservice for the Wahb platform. Owns text intelligence + future
-retrieval brain:
-- Text embeddings (all-MiniLM-L6-v2 today, BGE-M3 after Slice 0)
+Python microservice for the Wahb platform. Owns text intelligence + retrieval:
+- Text embeddings (`Qwen/Qwen3-Embedding-0.6B`, 1024-dim dense-only)
 - LLM-backed text ops (translate, summarize, tag extraction)
 - Stealth web extraction (Scrapling + Playwright)
-- Future: reranker, retrieval orchestration (`/v1/related`, `/v1/feed/*`)
+- Reranker and retrieval orchestration (`/v1/related`, `/v1/feed/news/slide`)
 
 Whisper transcription and CLIP image embedding moved to **Media-Service**
 (port 5051). If you find yourself wanting to add audio/image processing
@@ -25,7 +24,7 @@ here, that work belongs in Media-Service instead.
 
 Triangle model — Aggregation, Enrichment, and CMS communicate directly:
 - **Aggregation → Enrichment**: text embeddings (with optional tag extraction)
-- **CMS → Enrichment**: on-demand text intel (translate, summarize, future related/feed)
+- **CMS → Enrichment**: on-demand text intel (translate, summarize, related/feed orchestration)
 - **Enrichment → CMS**: write-back via `/internal/*` API
 
 ## Running
@@ -73,7 +72,7 @@ make test
 | Text embedding generation | Transcription (Media-Service owns Whisper) |
 | Stealth web extraction (Scrapling) | Image embedding (Media-Service owns CLIP) |
 | Translation / Summarization / Tag extraction (LLM) | Orchestrate pipelines or manage BullMQ queues |
-| Future retrieval orchestration (`/v1/related`, `/v1/feed/*`) | Serve user-facing APIs |
+| Retrieval orchestration (`/v1/related`, `/v1/feed/news/slide`) | Serve user-facing APIs |
 | CMS write-back of text embeddings + LLM metadata | FFmpeg transcoding or media downloads |
 
 ## API Endpoints
@@ -87,6 +86,9 @@ make test
 | `/v1/embed` | POST | Yes | Text(s) → vectors (with optional tag extraction) |
 | `/v1/embed/query` | POST | Yes | Single text → vector (no write-back) |
 | `/v1/extract` | POST | Yes | URL → clean article text |
+| `/v1/related` | POST | Yes | Dense vector related-content orchestration |
+| `/v1/feed/news/slide` | POST | Yes | News slide assembly/reranking helper |
+| `/v1/rerank` | POST | Yes | Cross-encoder rerank endpoint |
 | `/v1/translate` | POST | Yes | Text → target language |
 | `/v1/summarize` | POST | Yes | Text → summary + key points |
 

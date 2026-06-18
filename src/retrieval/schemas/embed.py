@@ -16,12 +16,8 @@ class EmbedRequest(BaseModel):
     # or a batch that shares a topic — e.g., multiple chunks of one article).
     # Adds one LLM call per request, so opt-in only.
     extract_tags: bool = False
-    # When true, also compute BGE-M3's sparse output (lexical weights) and
-    # write it to CMS alongside the dense vector. Required for hybrid
-    # retrieval at query time (Slice A's /v1/related). Same forward pass as
-    # the dense computation — no extra GPU/CPU cost — so cheap to enable.
-    # Aggregation passes this for long-form content (ARTICLE/VIDEO/PODCAST);
-    # short content (TWEET/COMMENT) doesn't need it.
+    # Legacy compatibility flag from the BGE-M3 sparse era. Qwen is dense-only,
+    # so this is currently a no-op and sparse write-back remains None.
     extract_sparse: bool = False
 
 

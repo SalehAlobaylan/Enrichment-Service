@@ -1,27 +1,18 @@
-"""Hybrid retrieval orchestration for POST /v1/related.
+"""Dense retrieval orchestration for POST /v1/related.
 
 Pipeline:
-  1. Resolve query vector — either fetch (dense, sparse) for `content_id`
-     from CMS, or embed `text` via BGE-M3 (one forward pass returns both).
-  2. Fan out two parallel kNN queries against CMS (dense vs sparse), using
-     candidate sizes from RELATED_K_*_DEFAULT.
-  3. Fuse the two rankings with Reciprocal Rank Fusion (RRF) — no weights,
-     no calibration, robust across query types and score scales.
-  4. (Slice B) Rerank the top RERANK_INPUT_K candidates with a cross-encoder
+  1. Resolve query vector — either fetch the dense vector for `content_id`
+     from CMS, or embed `text` via Qwen3-Embedding-0.6B.
+  2. Query dense kNN against CMS. Sparse retrieval hooks are legacy no-ops
+     while the CMS schema still carries the retired sparse column.
+  3. Rerank the top RERANK_INPUT_K candidates with a cross-encoder
      against the anchor text; reorder by rerank score. Skipped when
      req.rerank=False or when no anchor text is available.
-  5. Truncate to the caller's `k` and return with per-item provenance.
+  4. Truncate to the caller's `k` and return with per-item provenance.
 
-Why RRF: the dense column uses cosine distance and the sparse column uses
-negative inner product — different scales entirely. RRF only looks at RANK,
-not raw scores, so cross-mode score normalization is unnecessary. k=60 is
-the standard literature value (Cormack, Clarke, Büttcher 2009).
-
-Why rerank: RRF is rank-based, not relevance-based. The top items after
-RRF are "high in both rankings" — not necessarily "most relevant to the
-query." Cross-encoders see both texts together and produce calibrated
-relevance, dramatically better quality on the small candidate set RRF
-hands them.
+Why rerank: nearest-neighbor order is similarity-based, not calibrated
+relevance. Cross-encoders see both texts together and produce better quality
+on the small candidate set passed to them.
 """
 import asyncio
 from collections import defaultdict
@@ -63,9 +54,9 @@ class RelatedService:
         with related_duration.time():
             dense_q, sparse_q, anchor_text = await self._resolve_query(req)
 
-            # Dense + sparse fan-out in parallel. Both calls go through the
-            # same CMS circuit breaker, so a CMS outage fails both fast
-            # rather than spending 2× the budget on retries.
+            # Dense + legacy sparse fan-out in parallel. Qwen is dense-only,
+            # so sparse usually returns no hits; keep the path until the old
+            # CMS sparse column/routes are removed.
             dense_task = self.cms_client.knn_dense(
                 dense_q,
                 types=req.types,
@@ -82,9 +73,8 @@ class RelatedService:
 
             fused = self._rrf_fuse(dense_hits, sparse_hits, k=self.settings.RRF_K)
 
-            # Gauge tracks how often dense + sparse agree — high overlap
-            # means the two modes are redundant for this corpus; low overlap
-            # means hybrid is pulling its weight.
+            # Gauge tracks how often dense + legacy sparse agree. It should
+            # trend toward zero as Qwen dense-only content replaces old data.
             if fused:
                 overlap = sum(1 for r in fused if len(r.sources) == 2)
                 rrf_fusion_overlap_ratio.set(overlap / len(fused))
@@ -133,13 +123,13 @@ class RelatedService:
                     f"content_id={req.content_id} has no dense embedding stored"
                 )
             if not sparse:
-                # Backfill not done for this item — degrade to dense-only by
-                # passing an empty sparse map. CMS short-circuits the sparse
-                # kNN to 0 hits and RRF falls through to dense-only.
+                # Qwen-era item or old backfill gap — degrade to dense-only by
+                # passing an empty sparse map. CMS short-circuits sparse kNN to
+                # 0 hits and RRF falls through to dense-only.
                 logger.warning(
                     "related_anchor_missing_sparse",
                     content_id=req.content_id,
-                    hint="run admin re-embed trigger to populate embedding_sparse",
+                    hint="dense-only retrieval; embedding_sparse is legacy",
                 )
                 sparse = {}
             # Anchor text for reranker: fetched on-demand from batch_text

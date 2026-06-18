@@ -24,7 +24,7 @@ def settings() -> Settings:
 @pytest.fixture
 def mock_embedder() -> MagicMock:
     e = MagicMock(spec=EmbedderWrapper)
-    e.model_name = "BAAI/bge-m3"
+    e.model_name = "Qwen/Qwen3-Embedding-0.6B"
     e.dimensions = 1024
     e.encode.return_value = {
         "dense": [[0.1] * 1024],

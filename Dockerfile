@@ -1,6 +1,6 @@
 # ─── Stage 1: Download ML models ──────────────────────────────
 #
-# Pre-caches BGE-M3 (text embedder) + bge-reranker-v2-m3 into /models so
+# Pre-caches Qwen3-Embedding-0.6B (text embedder) + bge-reranker-v2-m3 into /models so
 # the runtime stage doesn't re-download ~6 GB on every container start.
 # Uses PyTorch's CPU-only index — without that pin the model-downloader
 # also pulls ~3 GB of nvidia-* CUDA libraries just to cache models on
