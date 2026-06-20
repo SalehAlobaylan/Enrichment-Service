@@ -12,3 +12,6 @@ class TopicDigestResponse(BaseModel):
     # One-line neutral lede + short bullets, grounded ONLY in the posts.
     summary: str
     bullets: list[str]
+    # One slug from the finite news taxonomy (see topic_digest service). Always a
+    # valid slug; "general" when no category fits or the model output is invalid.
+    category: str = "general"

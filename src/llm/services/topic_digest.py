@@ -16,9 +16,29 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
+# The finite news category taxonomy. The model picks exactly one; anything not
+# in this set (or missing) is normalized to "general", which the UI renders as
+# no chip. Keep in sync with the CMS/UI slug list.
+CATEGORIES = frozenset(
+    {
+        "politics",
+        "economy",
+        "world",
+        "conflict",
+        "sports",
+        "technology",
+        "science",
+        "health",
+        "culture",
+        "society",
+        "general",
+    }
+)
+
 # Source-grounded guardrail (product invariant): the digest must synthesize ONLY
 # what the posts say — no added facts, inference, or editorializing. Wahb stays a
-# source-grounded aggregator, not an AI news anchor.
+# source-grounded aggregator, not an AI news anchor. The category is a
+# CLASSIFICATION of the event, not added information.
 SYSTEM_PROMPT = """
 You are a news desk editor. You are given several short posts from DIFFERENT
 sources, all about the SAME news event. Produce a brief digest of the event.
@@ -32,8 +52,13 @@ Rules:
   speculate, or editorialize. If the posts disagree, state the event neutrally.
 - No source names, no hashtags, no opinions, no first person, no trailing
   punctuation beyond a period.
+- "category": classify the event into EXACTLY ONE of these English slugs:
+  politics, economy, world, conflict, sports, technology, science, health,
+  culture, society, general. Pick the single best fit; use "general" only when
+  none clearly applies. The slug is always English even for Arabic posts.
 
-Return ONLY a JSON object: {{"summary": "...", "bullets": ["...", "..."]}}
+Return ONLY a JSON object:
+{{"summary": "...", "bullets": ["...", "..."], "category": "..."}}
 """.strip()
 
 MAX_SNIPPETS = 12
@@ -64,12 +89,16 @@ class TopicDigestService:
 
         summary = ""
         bullets: list[str] = []
+        category = "general"
         try:
             parsed = json.loads(_strip_fences(raw))
             summary = str(parsed.get("summary", "")).strip()
             raw_bullets = parsed.get("bullets") or []
             if isinstance(raw_bullets, list):
                 bullets = [str(b).strip() for b in raw_bullets if str(b).strip()]
+            cat = str(parsed.get("category", "")).strip().lower()
+            if cat in CATEGORIES:
+                category = cat
         except Exception:
             # Model returned prose instead of JSON — salvage non-empty lines as bullets.
             lines = [ln.strip(" -•\t").strip() for ln in _strip_fences(raw).splitlines()]
@@ -84,4 +113,4 @@ class TopicDigestService:
         bullets = cleaned[:max_bullets]
         summary = summary[:MAX_SUMMARY_CHARS]
 
-        return TopicDigestResponse(summary=summary, bullets=bullets)
+        return TopicDigestResponse(summary=summary, bullets=bullets, category=category)
