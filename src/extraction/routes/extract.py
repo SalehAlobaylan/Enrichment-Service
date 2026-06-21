@@ -12,6 +12,8 @@ from src.extraction.schemas.extract import (
     TelegramChannelResponse,
     TwitterProfileRequest,
     TwitterProfileResponse,
+    TwitterRecommendationsRequest,
+    TwitterRecommendationsResponse,
 )
 from src.extraction.services.extraction import ExtractionService
 from src.extraction.services.telegram_channel import TelegramChannelService
@@ -94,3 +96,27 @@ async def extract_twitter(
         extractions_total.labels(status="failure").inc()
         logger.error("twitter_extraction_failed", username=body.username, error=str(exc))
         raise ExtractionError(f"Twitter extraction failed: {exc}") from exc
+
+
+@router.post(
+    "/extract/twitter/recommendations", response_model=TwitterRecommendationsResponse
+)
+async def extract_twitter_recommendations(
+    body: TwitterRecommendationsRequest, request: Request
+) -> TwitterRecommendationsResponse:
+    """X "who to follow" / قد يعجبك for a seed account (guest-accessible REST).
+
+    Powers the Source Intelligence relatedness signal: feeding a trusted source
+    returns accounts X considers similar — candidate sources to score + promote.
+    """
+    settings = request.app.state.settings
+    service = TwitterProfileService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+
+    try:
+        return await service.fetch_recommendations(body.seed, body.limit)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("twitter_recs_failed", seed=body.seed, error=str(exc))
+        raise ExtractionError(f"Twitter recommendations failed: {exc}") from exc

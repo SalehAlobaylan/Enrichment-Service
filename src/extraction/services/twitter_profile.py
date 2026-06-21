@@ -23,7 +23,12 @@ from datetime import datetime, timezone
 from curl_cffi import requests as cffi
 
 from src.common.utils.logging import get_logger
-from src.extraction.schemas.extract import TwitterPost, TwitterProfileResponse
+from src.extraction.schemas.extract import (
+    TwitterPost,
+    TwitterProfileResponse,
+    TwitterRecAccount,
+    TwitterRecommendationsResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -199,6 +204,52 @@ def _author(tweet: dict) -> dict:
     return ((tweet.get("core") or {}).get("user_results") or {}).get("result", {}).get("legacy", {})
 
 
+def _expanded_url(user: dict) -> str | None:
+    """The account's bio website (entities.url.urls[0].expanded_url), if any."""
+    urls = (((user.get("entities") or {}).get("url") or {}).get("urls")) or []
+    return urls[0].get("expanded_url") if urls else None
+
+
+def _avatar(user: dict) -> str | None:
+    """Profile image, upsized from the default 48px `_normal` to `_400x400`.
+    Free — present inline on every user object; served from the public pbs CDN.
+    """
+    u = user.get("profile_image_url_https") or user.get("profile_image_url")
+    return u.replace("_normal", "_400x400") if u else None
+
+
+def _rest_recommendations(seed_param: dict, limit: int, *, retry: bool = True) -> list[dict]:
+    """GET users/recommendations.json with a guest token (the connect_people
+    backend). `display_location=profile_accounts_sidebar` is REQUIRED — every
+    other value 500s. Returns the raw recommendation list (each {user, user_id}).
+    """
+    token = _guest_token()
+    params = {
+        **seed_param,
+        "connections": "following",
+        "limit": limit,
+        "display_location": "profile_accounts_sidebar",
+        "pc": "true",
+    }
+    headers = {**_headers(token), "x-twitter-active-user": "yes"}
+    r = cffi.get(
+        "https://api.twitter.com/1.1/users/recommendations.json",
+        params=params,
+        headers=headers,
+        impersonate="chrome",
+        timeout=25,
+    )
+    if r.status_code in (401, 403, 429):
+        # Guest token expired / per-token quota — refresh once and retry.
+        if retry:
+            _guest_token(force=True)
+            return _rest_recommendations(seed_param, limit, retry=False)
+        raise TwitterApiError(r.status_code, rate_limited=r.status_code == 429)
+    r.raise_for_status()
+    data = r.json()
+    return data if isinstance(data, list) else []
+
+
 class TwitterProfileService:
     """Fetch + parse one X profile timeline via guest-token GraphQL."""
 
@@ -207,6 +258,61 @@ class TwitterProfileService:
 
     async def fetch(self, username: str) -> TwitterProfileResponse:
         return await asyncio.to_thread(self._do_fetch, username)
+
+    async def fetch_recommendations(
+        self, seed: str, limit: int = 40
+    ) -> TwitterRecommendationsResponse:
+        return await asyncio.to_thread(self._do_recommendations, seed, limit)
+
+    def _do_recommendations(
+        self, raw_seed: str, limit: int
+    ) -> TwitterRecommendationsResponse:
+        raw = (raw_seed or "").strip()
+        # Numeric → user_id; otherwise normalize a handle/@handle/URL → screen_name.
+        if raw.isdigit():
+            seed_param: dict = {"user_id": raw}
+        else:
+            handle = tw_username(raw)
+            if not _HANDLE_RE.match(handle):
+                return TwitterRecommendationsResponse(seed=raw, exists=False)
+            seed_param = {"screen_name": handle}
+
+        try:
+            rows = _rest_recommendations(seed_param, max(1, min(limit, 40)))
+        except TwitterApiError as exc:
+            logger.warning("twitter_recs_failed", seed=raw, status=exc.status)
+            return TwitterRecommendationsResponse(
+                seed=raw, exists=False, rate_limited=exc.rate_limited
+            )
+        except Exception as exc:  # noqa: BLE001
+            rl = "429" in str(exc)
+            logger.warning("twitter_recs_failed", seed=raw, error=str(exc))
+            return TwitterRecommendationsResponse(seed=raw, exists=False, rate_limited=rl)
+
+        recs: list[TwitterRecAccount] = []
+        for row in rows:
+            u = row.get("user") or {}
+            sn = u.get("screen_name")
+            if not sn:
+                continue
+            recs.append(
+                TwitterRecAccount(
+                    username=sn.lower(),
+                    name=u.get("name"),
+                    followers=int(u.get("followers_count") or 0),
+                    friends=int(u.get("friends_count") or 0),
+                    statuses=int(u.get("statuses_count") or 0),
+                    listed=int(u.get("listed_count") or 0),
+                    verified=bool(u.get("verified")) or bool(u.get("ext_is_blue_verified")),
+                    is_protected=bool(u.get("protected")),
+                    description=(u.get("description") or "").strip(),
+                    url=_expanded_url(u),
+                    image_url=_avatar(u),
+                    created_at=_iso(u.get("created_at")),
+                    user_id=str(u.get("id_str") or u.get("id") or "") or None,
+                )
+            )
+        return TwitterRecommendationsResponse(seed=raw, exists=True, recommendations=recs)
 
     def _do_fetch(self, raw_username: str) -> TwitterProfileResponse:
         user = tw_username(raw_username)
@@ -254,6 +360,7 @@ class TwitterProfileService:
         name: str | None = None
         followers = 0
         verified = False
+        image_url: str | None = None
 
         def edge(sn: str | None, bucket: set[str]) -> None:
             if sn and sn.lower() != self_lower:
@@ -290,6 +397,7 @@ class TwitterProfileService:
                 verified = (
                     verified or bool(author.get("verified")) or bool(result.get("is_blue_verified"))
                 )
+                image_url = image_url or _avatar(author)
 
             rt = _unwrap((lg.get("retweeted_status_result") or {}).get("result"))
             qt = _unwrap((lg.get("quoted_status_result") or {}).get("result"))
@@ -324,6 +432,7 @@ class TwitterProfileService:
             name=name,
             followers=followers,
             verified=verified,
+            image_url=image_url,
             posts=posts,
             retweeted=sorted(retweeted),
             quoted=sorted(quoted),

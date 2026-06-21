@@ -95,7 +95,48 @@ class TwitterProfileResponse(BaseModel):
     name: str | None = None
     followers: int = 0
     verified: bool = False
+    image_url: str | None = None  # profile avatar
     posts: list[TwitterPost] = []
     retweeted: list[str] = []  # accounts this profile retweeted
     quoted: list[str] = []     # accounts this profile quote-tweeted
     mentioned: list[str] = []  # accounts @mentioned in tweets
+
+
+class TwitterRecommendationsRequest(BaseModel):
+    # Seed account: bare handle, @handle, x.com URL, or a numeric user_id —
+    # normalized server-side. X recommends accounts SIMILAR to this seed.
+    seed: str = Field(..., min_length=1)
+    limit: int = 40
+
+
+class TwitterRecAccount(BaseModel):
+    """One X account X recommends as similar to the seed. All fields come inline
+    from users/recommendations.json, so a candidate validates without a re-fetch.
+    """
+
+    username: str
+    name: str | None = None
+    followers: int = 0
+    friends: int = 0
+    statuses: int = 0
+    listed: int = 0
+    verified: bool = False
+    is_protected: bool = False
+    description: str = ""
+    url: str | None = None         # expanded bio URL (cross-links to RSS discovery)
+    image_url: str | None = None   # profile avatar (free in the API response)
+    created_at: str | None = None
+    user_id: str | None = None
+
+
+class TwitterRecommendationsResponse(BaseModel):
+    """X's "who to follow" / "قد يعجبك" graph for a seed account, via the guest-
+    accessible legacy REST `users/recommendations.json` (the connect_people
+    backend). Seed-relative: feeding a trusted source returns accounts X considers
+    the same kind — the Source Intelligence relatedness signal.
+    """
+
+    seed: str
+    exists: bool
+    rate_limited: bool = False
+    recommendations: list[TwitterRecAccount] = []
