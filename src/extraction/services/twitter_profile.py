@@ -361,6 +361,7 @@ class TwitterProfileService:
         followers = 0
         verified = False
         image_url: str | None = None
+        description = ""
 
         def edge(sn: str | None, bucket: set[str]) -> None:
             if sn and sn.lower() != self_lower:
@@ -398,6 +399,7 @@ class TwitterProfileService:
                     verified or bool(author.get("verified")) or bool(result.get("is_blue_verified"))
                 )
                 image_url = image_url or _avatar(author)
+                description = description or (author.get("description") or "").strip()
 
             rt = _unwrap((lg.get("retweeted_status_result") or {}).get("result"))
             qt = _unwrap((lg.get("quoted_status_result") or {}).get("result"))
@@ -433,6 +435,7 @@ class TwitterProfileService:
             followers=followers,
             verified=verified,
             image_url=image_url,
+            description=description,
             posts=posts,
             retweeted=sorted(retweeted),
             quoted=sorted(quoted),

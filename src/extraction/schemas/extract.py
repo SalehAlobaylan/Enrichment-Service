@@ -96,6 +96,7 @@ class TwitterProfileResponse(BaseModel):
     followers: int = 0
     verified: bool = False
     image_url: str | None = None  # profile avatar
+    description: str = ""         # profile bio (for source classification)
     posts: list[TwitterPost] = []
     retweeted: list[str] = []  # accounts this profile retweeted
     quoted: list[str] = []     # accounts this profile quote-tweeted
