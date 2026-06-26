@@ -141,3 +141,109 @@ class TwitterRecommendationsResponse(BaseModel):
     exists: bool
     rate_limited: bool = False
     recommendations: list[TwitterRecAccount] = []
+
+
+# ---------- YouTube (InnerTube / youtubei) ----------
+
+
+class YouTubeChannelRequest(BaseModel):
+    # @handle, UC… channel id, or a youtube.com channel URL.
+    channel: str = Field(..., min_length=1)
+
+
+class YouTubeVideo(BaseModel):
+    video_id: str
+    title: str = ""
+
+
+class YouTubeChannelResponse(BaseModel):
+    """A YouTube channel read via the guest InnerTube WEB client (no API key, no
+    quota). Recent video titles are the text CMS scores for relevance; subscribers
+    feed the authority signal.
+    """
+
+    channel: str
+    exists: bool
+    channel_id: str | None = None
+    title: str | None = None
+    subscribers: int = 0
+    description: str = ""
+    image_url: str | None = None  # channel avatar
+    videos: list[YouTubeVideo] = []
+    # Audio-first detection (from a sample of recent videos' YouTube category):
+    # Music/Gaming/Sports/Film need the picture; News/Education/Entertainment/etc.
+    # are talk-driven and work audio-first. category = the dominant sampled one.
+    category: str | None = None
+    audio_first: bool = True
+    top_duration_sec: int = 0  # newest video length (also feeds the long-form guard)
+
+
+class YouTubeRelatedRequest(BaseModel):
+    channel: str = Field(..., min_length=1)
+
+
+class YouTubeRelatedChannel(BaseModel):
+    channel_id: str
+    name: str | None = None
+    via: str = "youtube-watchnext"
+
+
+class YouTubeRelatedResponse(BaseModel):
+    """Channels surfaced in the watch-next graph of a seed channel's recent video
+    — the YouTube analog of forwards/retweets. Each is a candidate the graph
+    scores + promotes.
+    """
+
+    channel: str
+    exists: bool
+    related: list[YouTubeRelatedChannel] = []
+
+
+# ---------- Apple Podcasts "Listeners Also Subscribed" ----------
+
+
+class ApplePodcastRelatedRequest(BaseModel):
+    # Apple podcast collection id (numeric adamId).
+    collection_id: str = Field(..., min_length=1)
+    country: str = "us"
+
+
+class AppleRelatedShow(BaseModel):
+    adam_id: str
+    title: str | None = None
+    genres: list[str] = []
+
+
+class ApplePodcastRelatedResponse(BaseModel):
+    """Shows in a seed podcast's "You Might Also Like" / "Listeners Also
+    Subscribed" shelf — Apple's co-listen relation, scraped from the public show
+    page's embedded JSON (no token, no login). Each adam_id resolves to an RSS
+    feed via the iTunes lookup API on the Aggregation side.
+    """
+
+    collection_id: str
+    exists: bool
+    related: list[AppleRelatedShow] = []
+
+
+# ---------- YouTube channel search (topic/keyword discovery) ----------
+
+
+class YouTubeSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    limit: int = 15
+
+
+class YouTubeSearchChannel(BaseModel):
+    channel_id: str
+    title: str | None = None
+    subscribers: int = 0
+
+
+class YouTubeSearchResponse(BaseModel):
+    """Channels matching a topic query via guest InnerTube search (channels
+    filter). The YouTube analog of the iTunes podcast keyword net — feeds
+    interest-driven discovery for media profiles."""
+
+    query: str
+    channels: list[YouTubeSearchChannel] = []

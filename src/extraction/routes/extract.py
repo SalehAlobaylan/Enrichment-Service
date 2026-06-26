@@ -5,6 +5,8 @@ from src.common.middleware.error_handler import ExtractionError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import extractions_total
 from src.extraction.schemas.extract import (
+    ApplePodcastRelatedRequest,
+    ApplePodcastRelatedResponse,
     ExtractRequest,
     ExtractResponse,
     FeedExtractResponse,
@@ -14,10 +16,18 @@ from src.extraction.schemas.extract import (
     TwitterProfileResponse,
     TwitterRecommendationsRequest,
     TwitterRecommendationsResponse,
+    YouTubeChannelRequest,
+    YouTubeChannelResponse,
+    YouTubeRelatedRequest,
+    YouTubeRelatedResponse,
+    YouTubeSearchRequest,
+    YouTubeSearchResponse,
 )
+from src.extraction.services.apple_podcast import ApplePodcastService
 from src.extraction.services.extraction import ExtractionService
 from src.extraction.services.telegram_channel import TelegramChannelService
 from src.extraction.services.twitter_profile import TwitterProfileService
+from src.extraction.services.youtube_innertube import YouTubeInnerTubeService
 
 logger = get_logger(__name__)
 router = APIRouter(dependencies=[Depends(verify_service_token)])
@@ -120,3 +130,85 @@ async def extract_twitter_recommendations(
         extractions_total.labels(status="failure").inc()
         logger.error("twitter_recs_failed", seed=body.seed, error=str(exc))
         raise ExtractionError(f"Twitter recommendations failed: {exc}") from exc
+
+
+@router.post("/extract/youtube", response_model=YouTubeChannelResponse)
+async def extract_youtube(
+    body: YouTubeChannelRequest, request: Request
+) -> YouTubeChannelResponse:
+    """Read a YouTube channel via guest InnerTube (no API key, no quota).
+
+    Powers the media Source Intelligence graph: recent video titles (relevance)
+    + subscriber count (authority) for a candidate/seed channel.
+    """
+    settings = request.app.state.settings
+    service = YouTubeInnerTubeService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+
+    try:
+        return await service.fetch_channel(body.channel)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("youtube_extraction_failed", channel=body.channel, error=str(exc))
+        raise ExtractionError(f"YouTube extraction failed: {exc}") from exc
+
+
+@router.post("/extract/youtube/related", response_model=YouTubeRelatedResponse)
+async def extract_youtube_related(
+    body: YouTubeRelatedRequest, request: Request
+) -> YouTubeRelatedResponse:
+    """Channels in a seed channel's watch-next graph — the YouTube relatedness
+    signal (the analog of forwards/retweets) feeding candidate discovery.
+    """
+    settings = request.app.state.settings
+    service = YouTubeInnerTubeService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+
+    try:
+        return await service.fetch_related(body.channel)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("youtube_related_failed", channel=body.channel, error=str(exc))
+        raise ExtractionError(f"YouTube related failed: {exc}") from exc
+
+
+@router.post("/extract/youtube/search", response_model=YouTubeSearchResponse)
+async def extract_youtube_search(
+    body: YouTubeSearchRequest, request: Request
+) -> YouTubeSearchResponse:
+    """Topic/keyword channel search via guest InnerTube — the YouTube analog of
+    the iTunes podcast keyword net, for interest-driven media discovery.
+    """
+    settings = request.app.state.settings
+    service = YouTubeInnerTubeService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+
+    try:
+        return await service.search_channels(body.query, body.limit)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("youtube_search_failed", query=body.query, error=str(exc))
+        raise ExtractionError(f"YouTube search failed: {exc}") from exc
+
+
+@router.post("/extract/apple-podcast/related", response_model=ApplePodcastRelatedResponse)
+async def extract_apple_related(
+    body: ApplePodcastRelatedRequest, request: Request
+) -> ApplePodcastRelatedResponse:
+    """A podcast's Apple "You Might Also Like" / "Listeners Also Subscribed" shelf
+    — the co-listen relation, scraped from the public show page (no token).
+    """
+    settings = request.app.state.settings
+    service = ApplePodcastService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+
+    try:
+        return await service.fetch_related(body.collection_id, body.country)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("apple_related_failed", collection_id=body.collection_id, error=str(exc))
+        raise ExtractionError(f"Apple related failed: {exc}") from exc
