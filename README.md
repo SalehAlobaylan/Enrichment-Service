@@ -16,6 +16,10 @@ It does **not** transcribe audio, embed images, run FFmpeg, orchestrate the pipe
 - **Retrieval** (`/v1/related`, `/v1/feed/news/slide`) — hybrid kNN + RRF fusion and News-feed slide assembly.
 - **Extraction** (`/v1/extract`, `/extract/{feed,telegram,twitter}`) — Scrapling + Playwright stealth.
 
+## Media Atomization Role
+
+Enrichment plans contextual chapters for long media through `/v1/chapters/generate`; it does not cut media or publish feed units. The chapter plan should include title, summary, start/end timestamps, context label, confidence, boundary reason, standalone/coherence score, sponsor/intro/outro indicators, and review reason when needed. Aggregation performs deterministic duration normalization and merging after the plan; CMS owns review state and feed visibility.
+
 ## Run Locally
 
 ```bash

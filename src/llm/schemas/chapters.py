@@ -29,8 +29,17 @@ class GeneratedChapter(BaseModel):
     # Index into the request's `windows` where this chapter STARTS. CMS maps it
     # back to windows[start_index].start_sec.
     start_index: int
+    end_index: int | None = None
+    start_sec: float | None = None
+    end_sec: float | None = None
     title: str
     summary: str | None = None
+    context_label: str | None = None
+    confidence: float = Field(default=0.72, ge=0, le=1)
+    boundary_reason: str | None = None
+    standalone_score: float = Field(default=0.72, ge=0, le=1)
+    contains_sponsor_or_intro: bool = False
+    needs_review_reason: str | None = None
 
 
 class ChaptersGenerateResponse(BaseModel):
