@@ -247,3 +247,66 @@ class YouTubeSearchResponse(BaseModel):
 
     query: str
     channels: list[YouTubeSearchChannel] = []
+
+
+# ---------- YouTube podcast extraction (podcast-intent search + feed paste) ----------
+
+
+class ExtractedChannel(BaseModel):
+    """A channel pulled out of an InnerTube payload (search results or a pasted
+    youtubei/v1 feed). `is_podcast` is True when YouTube tagged the source lockup
+    LOCKUP_CONTENT_TYPE_PODCAST (or it owns a podcast playlist) — the explicit
+    podcast designation we use to surface إذاعة ثمانية / Mics مايكس etc. Subscribers/
+    audio-first are filled later by the per-channel enrichment (fetch_channel)."""
+
+    channel_id: str
+    title: str | None = None
+    handle: str | None = None  # @handle (from canonicalBaseUrl)
+    is_podcast: bool = False
+    episode_count: int = 0
+    subscribers: int = 0
+    mention_count: int = 0  # times referenced in the payload (relevance proxy)
+
+
+class YouTubePodcastSearchRequest(BaseModel):
+    # Podcast-intent phrase, e.g. "بودكاست اقتصاد" / "tech podcast".
+    query: str = Field(..., min_length=1)
+    limit: int = 15
+
+
+class YouTubePodcastSearchResponse(BaseModel):
+    """Channels behind the podcast results of a podcast-intent guest search — the
+    fix for the channel-only/raw-keyword search that never surfaced YouTube's
+    podcast shelves. Podcast-tagged channels are returned first."""
+
+    query: str
+    channels: list[ExtractedChannel] = []
+
+
+class YouTubeParseFeedRequest(BaseModel):
+    # A raw youtubei/v1 response object (e.g. a personalized home feed the admin
+    # pasted). Parsed server-side into the channels it references.
+    raw: dict
+
+
+class YouTubeResolveLinksRequest(BaseModel):
+    # One YouTube reference per item: a @handle, channel URL, /channel/UC… URL,
+    # raw UC… id, or any video / share / shorts link. The low-friction seed path
+    # (each line is two taps off the Share button — no DevTools JSON paste).
+    inputs: list[str] = Field(default_factory=list)
+
+
+class YouTubeResolveLinksResponse(BaseModel):
+    """Distinct channels behind pasted YouTube links/handles. Channel refs resolve
+    directly; video refs resolve to their owning channel. Each is enriched + queued
+    for review on the Aggregation side (guest InnerTube — no auth, no quota)."""
+
+    channels: list[ExtractedChannel] = []
+
+
+class YouTubeParseFeedResponse(BaseModel):
+    """Distinct channels referenced by a pasted youtubei/v1 payload — the manual
+    seed path. Each channel is then enriched + queued for review on the
+    Aggregation side (no stored credentials; the admin stays the session)."""
+
+    channels: list[ExtractedChannel] = []

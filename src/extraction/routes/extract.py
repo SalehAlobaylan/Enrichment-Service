@@ -18,8 +18,14 @@ from src.extraction.schemas.extract import (
     TwitterRecommendationsResponse,
     YouTubeChannelRequest,
     YouTubeChannelResponse,
+    YouTubeParseFeedRequest,
+    YouTubeParseFeedResponse,
+    YouTubePodcastSearchRequest,
+    YouTubePodcastSearchResponse,
     YouTubeRelatedRequest,
     YouTubeRelatedResponse,
+    YouTubeResolveLinksRequest,
+    YouTubeResolveLinksResponse,
     YouTubeSearchRequest,
     YouTubeSearchResponse,
 )
@@ -192,6 +198,68 @@ async def extract_youtube_search(
         extractions_total.labels(status="failure").inc()
         logger.error("youtube_search_failed", query=body.query, error=str(exc))
         raise ExtractionError(f"YouTube search failed: {exc}") from exc
+
+
+@router.post(
+    "/extract/youtube/podcast-search", response_model=YouTubePodcastSearchResponse
+)
+async def extract_youtube_podcast_search(
+    body: YouTubePodcastSearchRequest, request: Request
+) -> YouTubePodcastSearchResponse:
+    """Podcast-intent guest search — parses YouTube's podcast shelves (not just
+    channelRenderer) so famous podcast networks surface for media discovery.
+    """
+    settings = request.app.state.settings
+    service = YouTubeInnerTubeService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+    try:
+        return await service.search_podcasts(body.query, body.limit)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("youtube_podcast_search_failed", query=body.query, error=str(exc))
+        raise ExtractionError(f"YouTube podcast search failed: {exc}") from exc
+
+
+@router.post("/extract/youtube/parse-feed", response_model=YouTubeParseFeedResponse)
+async def extract_youtube_parse_feed(
+    body: YouTubeParseFeedRequest, request: Request
+) -> YouTubeParseFeedResponse:
+    """Parse a pasted youtubei/v1 response into the channels it references — the
+    manual seed path (the admin stays the authenticated session; we store no token).
+    """
+    settings = request.app.state.settings
+    service = YouTubeInnerTubeService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+    try:
+        channels = await service.parse_feed(body.raw)
+        return YouTubeParseFeedResponse(channels=channels)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("youtube_parse_feed_failed", error=str(exc))
+        raise ExtractionError(f"YouTube parse feed failed: {exc}") from exc
+
+
+@router.post(
+    "/extract/youtube/resolve-links", response_model=YouTubeResolveLinksResponse
+)
+async def extract_youtube_resolve_links(
+    body: YouTubeResolveLinksRequest, request: Request
+) -> YouTubeResolveLinksResponse:
+    """Resolve pasted YouTube links / @handles / video URLs into the channels behind
+    them — the low-friction seed path (guest InnerTube, no auth, no quota)."""
+    settings = request.app.state.settings
+    service = YouTubeInnerTubeService(timeout_sec=settings.EXTRACT_TIMEOUT_SEC)
+    try:
+        channels = await service.resolve_links(body.inputs)
+        return YouTubeResolveLinksResponse(channels=channels)
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        extractions_total.labels(status="failure").inc()
+        logger.error("youtube_resolve_links_failed", error=str(exc))
+        raise ExtractionError(f"YouTube resolve links failed: {exc}") from exc
 
 
 @router.post("/extract/apple-podcast/related", response_model=ApplePodcastRelatedResponse)
