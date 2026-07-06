@@ -21,7 +21,15 @@ from src.common.utils.logging import get_logger, setup_logging
 from src.extraction.routes import extract
 from src.llm.clients.llm import LLMClient
 from src.llm.clients.llm_cache import LLMCache
-from src.llm.routes import chapters, classify, summarize, topic_digest, topic_label, translate
+from src.llm.routes import (
+    chapter_proposal,
+    chapters,
+    classify,
+    summarize,
+    topic_digest,
+    topic_label,
+    translate,
+)
 from src.retrieval.clients.slide_cache import SlideCache
 from src.retrieval.models.manager import ModelManager
 from src.retrieval.routes import embed, feed_news, related, rerank
@@ -169,6 +177,7 @@ else:
     app.include_router(classify.router, prefix="/v1")
     app.include_router(topic_digest.router, prefix="/v1")
     app.include_router(chapters.router, prefix="/v1")
+    app.include_router(chapter_proposal.router, prefix="/v1")  # stage 6 — Studio Autopilot proposals
     app.include_router(admin.router, prefix="/v1")
 
 # Error handlers — TranscriptionError removed (it lives in Media-Service now).
