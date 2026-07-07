@@ -177,7 +177,8 @@ else:
     app.include_router(classify.router, prefix="/v1")
     app.include_router(topic_digest.router, prefix="/v1")
     app.include_router(chapters.router, prefix="/v1")
-    app.include_router(chapter_proposal.router, prefix="/v1")  # stage 6 — Studio Autopilot proposals
+    # Stage 6: Studio Autopilot proposals.
+    app.include_router(chapter_proposal.router, prefix="/v1")
     app.include_router(admin.router, prefix="/v1")
 
 # Error handlers — TranscriptionError removed (it lives in Media-Service now).

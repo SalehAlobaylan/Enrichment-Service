@@ -7,8 +7,8 @@ from lxml import etree
 
 from src.common.middleware.error_handler import ExtractionError
 from src.common.utils.logging import get_logger
-from src.common.utils.url_guard import UnsafeURLError, validate_public_url
 from src.common.utils.metrics import extraction_duration, extractions_total
+from src.common.utils.url_guard import UnsafeURLError, validate_public_url
 from src.extraction.schemas.extract import (
     ExtractResponse,
     FeedExtractResponse,
@@ -38,7 +38,7 @@ def _get_fetcher():
     a single deployment.
     """
     try:
-        from scrapling.fetchers import Fetcher
+        from scrapling.defaults import Fetcher
 
         return Fetcher
     except Exception as exc:  # noqa: BLE001  (ModuleNotFoundError: playwright, etc.)

@@ -1,5 +1,7 @@
 import json
+from json import JSONDecodeError
 
+from src.common.middleware.error_handler import LLMError
 from src.common.utils.logging import get_logger
 from src.llm.clients.llm import LLMClient
 from src.llm.schemas.chapters import (
@@ -65,7 +67,20 @@ Hard rules:
 - No hashtags, no surrounding quotes.
 
 Return ONLY a JSON object of this shape:
-{"chapters": [{"start_index": 0, "end_index": 12, "title": "...", "summary": "...", "context_label": "...", "confidence": 0.9, "boundary_reason": "...", "standalone_score": 0.9, "contains_sponsor_or_intro": false, "needs_review_reason": null}, ...]}
+{
+  "chapters": [{
+    "start_index": 0,
+    "end_index": 12,
+    "title": "...",
+    "summary": "...",
+    "context_label": "...",
+    "confidence": 0.9,
+    "boundary_reason": "...",
+    "standalone_score": 0.9,
+    "contains_sponsor_or_intro": false,
+    "needs_review_reason": null
+  }, ...]
+}
 """.strip()
 
 
@@ -126,10 +141,15 @@ class ChaptersGenerationService:
     ) -> list[GeneratedChapter]:
         try:
             parsed = json.loads(_strip_fences(raw))
-            items = parsed.get("chapters", []) if isinstance(parsed, dict) else []
-        except Exception:
+        except JSONDecodeError as exc:
             logger.warning("chapters_parse_failed", raw_preview=raw[:200])
-            items = []
+            raise LLMError("Chapters generation returned malformed JSON") from exc
+
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("chapters"), list):
+            logger.warning("chapters_parse_missing_required_fields")
+            raise LLMError("Chapters generation returned an invalid response")
+
+        items = parsed["chapters"]
 
         cleaned: list[GeneratedChapter] = []
         seen: set[int] = set()
@@ -187,7 +207,9 @@ class ChaptersGenerationService:
                         chapter.end_index = last_index
                     else:
                         prev_indices = [idx for idx in sorted_indices if idx < next_start]
-                        chapter.end_index = prev_indices[-1] if prev_indices else chapter.start_index
+                        chapter.end_index = (
+                            prev_indices[-1] if prev_indices else chapter.start_index
+                        )
         return cleaned
 
 

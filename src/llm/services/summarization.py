@@ -1,6 +1,8 @@
 import json
+from json import JSONDecodeError
 
 from src.common.clients.cms import CMSClient
+from src.common.middleware.error_handler import LLMError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import summarizations_total
 from src.llm.clients.llm import LLMClient
@@ -47,7 +49,7 @@ class SummarizationService:
             SYSTEM_PROMPT, user_prompt, max_tokens=1024, operation="summarize"
         )
 
-        parsed = json.loads(_strip_fences(raw))
+        parsed = self._parse(raw)
 
         summarizations_total.labels(status="success").inc()
 
@@ -60,6 +62,25 @@ class SummarizationService:
             await self._write_back(content_id, response)
 
         return response
+
+    def _parse(self, raw: str) -> dict[str, object]:
+        try:
+            parsed = json.loads(_strip_fences(raw))
+        except JSONDecodeError as exc:
+            summarizations_total.labels(status="failure").inc()
+            logger.warning("summary_parse_failed", raw_preview=raw[:200])
+            raise LLMError("Summarization returned malformed JSON") from exc
+
+        if (
+            not isinstance(parsed, dict)
+            or not isinstance(parsed.get("summary"), str)
+            or not parsed["summary"].strip()
+        ):
+            summarizations_total.labels(status="failure").inc()
+            logger.warning("summary_parse_missing_required_fields")
+            raise LLMError("Summarization returned an invalid response")
+
+        return parsed
 
     async def _write_back(self, content_id: str, result: SummarizeResponse) -> None:
         try:

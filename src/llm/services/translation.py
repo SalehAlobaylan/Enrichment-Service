@@ -1,6 +1,8 @@
 import json
+from json import JSONDecodeError
 
 from src.common.clients.cms import CMSClient
+from src.common.middleware.error_handler import LLMError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import translations_total
 from src.llm.clients.llm import LLMClient
@@ -47,7 +49,7 @@ class TranslationService:
             SYSTEM_PROMPT, user_prompt, max_tokens=2048, operation="translate"
         )
 
-        parsed = json.loads(_strip_fences(raw))
+        parsed = self._parse(raw)
         detected_source = parsed.get("source_language", source_language or "unknown")
 
         translations_total.labels(status="success").inc()
@@ -62,6 +64,25 @@ class TranslationService:
             await self._write_back(content_id, response)
 
         return response
+
+    def _parse(self, raw: str) -> dict[str, object]:
+        try:
+            parsed = json.loads(_strip_fences(raw))
+        except JSONDecodeError as exc:
+            translations_total.labels(status="failure").inc()
+            logger.warning("translation_parse_failed", raw_preview=raw[:200])
+            raise LLMError("Translation returned malformed JSON") from exc
+
+        if (
+            not isinstance(parsed, dict)
+            or not isinstance(parsed.get("translated_text"), str)
+            or not parsed["translated_text"].strip()
+        ):
+            translations_total.labels(status="failure").inc()
+            logger.warning("translation_parse_missing_required_fields")
+            raise LLMError("Translation returned an invalid response")
+
+        return parsed
 
     async def _write_back(self, content_id: str, result: TranslateResponse) -> None:
         try:
