@@ -10,6 +10,8 @@ of their inputs, so this is a safe and high-leverage optimization.
 from __future__ import annotations
 
 import hashlib
+import json
+from typing import Any
 
 from redis.asyncio import Redis
 
@@ -59,6 +61,15 @@ class LLMCache:
         return f"{KEY_PREFIX}:v{CACHE_VERSION}:{h.hexdigest()}"
 
     async def get(self, key: str) -> str | None:
+        entry = await self.get_entry(key)
+        return entry[0] if entry else None
+
+    async def get_entry(self, key: str) -> tuple[str, dict[str, Any] | None] | None:
+        """Return response + optional metering provenance.
+
+        Legacy values are plain strings and intentionally remain cache hits;
+        callers can label their avoided-cost estimate accordingly.
+        """
         try:
             raw = await self._redis.get(key)
         except Exception as exc:
@@ -68,11 +79,26 @@ class LLMCache:
         if raw is None:
             return None
         if isinstance(raw, bytes):
-            return raw.decode("utf-8")
-        return str(raw)
+            raw = raw.decode("utf-8")
+        text = str(raw)
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, dict) and decoded.get("version") == 2 and isinstance(decoded.get("text"), str):
+                return decoded["text"], decoded.get("usage") if isinstance(decoded.get("usage"), dict) else None
+        except (TypeError, ValueError):
+            pass
+        return text, None
 
     async def set(self, key: str, value: str, ttl_sec: int | None = None) -> None:
         try:
             await self._redis.set(key, value, ex=ttl_sec or self._default_ttl)
+        except Exception as exc:
+            logger.warning("llm_cache_set_failed", error=str(exc))
+
+    async def set_entry(self, key: str, value: str, usage: dict[str, int], ttl_sec: int | None = None) -> None:
+        """Store a versioned entry with the provider response's measured units."""
+        try:
+            payload = json.dumps({"version": 2, "text": value, "usage": usage}, separators=(",", ":"))
+            await self._redis.set(key, payload, ex=ttl_sec or self._default_ttl)
         except Exception as exc:
             logger.warning("llm_cache_set_failed", error=str(exc))

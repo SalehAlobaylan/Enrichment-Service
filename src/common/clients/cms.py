@@ -132,6 +132,17 @@ class CMSClient:
             metric_label="update_content",
         )
 
+    async def emit_ai_spend_events(self, events: list[dict[str, Any]]) -> None:
+        """Best-effort governor metering. Callers schedule this and never await it.
+
+        A failed ledger write must not turn a successful enrichment operation
+        into a user-visible failure.
+        """
+        await self._request(
+            "POST", "/internal/ai-spend/events", json={"events": events},
+            metric_label="emit_ai_spend_events",
+        )
+
     # ─── Slice A: hybrid retrieval ──────────────────────────────────
 
     async def get_content_embeddings(self, content_id: str) -> dict[str, Any]:

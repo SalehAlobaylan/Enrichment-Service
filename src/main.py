@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 hint="Verify REDIS_URL; cache is a perf win, not required for correctness",
             )
 
-    llm_client = LLMClient(settings, cache=llm_cache)
+    llm_client = LLMClient(settings, cache=llm_cache, cms_client=cms_client)
 
     # News-feed slide cache — reuses the LLM-cache Redis connection (db=1) with
     # a distinct key prefix. None if the cache is off or Redis was unreachable

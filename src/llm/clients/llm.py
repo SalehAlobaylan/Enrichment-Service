@@ -2,6 +2,8 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any, TYPE_CHECKING
+from uuid import uuid4
 
 from src.common.config import Settings
 from src.common.middleware.error_handler import LLMError
@@ -17,6 +19,9 @@ from src.common.utils.metrics import (
     llm_retries_total,
 )
 from src.llm.clients.llm_cache import LLMCache
+
+if TYPE_CHECKING:
+    from src.common.clients.cms import CMSClient
 
 # Caching is only safe for low-temperature ("deterministic-ish") prompts.
 # Above this threshold, the model is intentionally sampling diversely and
@@ -77,7 +82,7 @@ def _classify_error(exc: Exception) -> tuple[str, bool]:
 
 
 # Type alias for a per-provider call: (system_prompt, user_prompt, max_tokens, temperature) -> text
-_ProviderCall = Callable[[str, str, int, float], Awaitable[str]]
+_ProviderCall = Callable[[str, str, int, float], Awaitable[tuple[str, dict[str, int]]]]
 
 
 class LLMClient:
@@ -96,10 +101,11 @@ class LLMClient:
     On overall failure, raises the last LLMError encountered.
     """
 
-    def __init__(self, settings: Settings, cache: LLMCache | None = None):
+    def __init__(self, settings: Settings, cache: LLMCache | None = None, cms_client: "CMSClient | None" = None):
         self.settings = settings
         self.primary_provider = (settings.LLM_PROVIDER or "").strip().lower()
         self._cache = cache if settings.LLM_CACHE_ENABLED else None
+        self._cms_client = cms_client
         self._clients: dict[str, object] = {}
         self._dispatch: dict[str, _ProviderCall] = {}
 
@@ -162,6 +168,9 @@ class LLMClient:
         max_tokens: int = 1024,
         temperature: float = 0.3,
         operation: str = "complete",
+        trigger_source: str = "unknown",
+        system_run_id: str | None = None,
+        tenant_id: str = "default",
     ) -> str:
         chain = self._provider_chain()
         if not chain:
@@ -192,8 +201,9 @@ class LLMClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            cached = await self._cache.get(cache_key)  # type: ignore[union-attr]
-            if cached is not None:
+            cached_entry = await self._cache.get_entry(cache_key)  # type: ignore[union-attr]
+            if cached_entry is not None:
+                cached, cached_usage = cached_entry
                 llm_cache_hits_total.labels(
                     provider=chain[0], operation=operation
                 ).inc()
@@ -201,6 +211,11 @@ class LLMClient:
                     "llm_cache_hit",
                     provider=chain[0],
                     operation=operation,
+                )
+                self._emit_spend(
+                    provider=chain[0], model=self.settings.model_for(chain[0]), operation=operation,
+                    usage=cached_usage or {}, cached=True, trigger_source=trigger_source,
+                    system_run_id=system_run_id, tenant_id=tenant_id,
                 )
                 return cached
             llm_cache_misses_total.labels(
@@ -223,7 +238,7 @@ class LLMClient:
                     operation=operation,
                 )
             try:
-                result = await self._attempt_provider(
+                result, usage = await self._attempt_provider(
                     provider, system_prompt, user_prompt, max_tokens, temperature, operation
                 )
                 winner = provider
@@ -231,9 +246,14 @@ class LLMClient:
                 # outputs come from a different model and shouldn't be served
                 # as cached "primary" responses.
                 if cache_eligible and cache_key and winner == chain[0]:
-                    await self._cache.set(  # type: ignore[union-attr]
-                        cache_key, result, self.settings.LLM_CACHE_TTL_SEC
+                    await self._cache.set_entry(  # type: ignore[union-attr]
+                        cache_key, result, usage, self.settings.LLM_CACHE_TTL_SEC
                     )
+                self._emit_spend(
+                    provider=provider, model=self.settings.model_for(provider), operation=operation,
+                    usage=usage, cached=False, trigger_source=trigger_source,
+                    system_run_id=system_run_id, tenant_id=tenant_id,
+                )
                 return result
             except LLMError as exc:
                 last_error = exc
@@ -251,7 +271,7 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         operation: str,
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         """Run one provider through the retry loop. Raises LLMError on exhaustion.
 
         This is the unit of work that fallback orchestration retries with a
@@ -314,9 +334,28 @@ class LLMClient:
         rid = current_request_id()
         return {"X-Request-ID": rid} if rid else {}
 
+    def _emit_spend(self, *, provider: str, model: str, operation: str, usage: dict[str, int], cached: bool, trigger_source: str, system_run_id: str | None, tenant_id: str) -> None:
+        """Schedule metering without coupling LLM availability to CMS."""
+        if self._cms_client is None:
+            return
+        event: dict[str, Any] = {
+            "event_id": str(uuid4()), "spend_class": "llm", "operation": operation,
+            "provider": provider, "model": model, "units": usage, "cached": cached,
+            "estimated": not bool(usage), "avoided_cost_estimated": cached and not bool(usage),
+            "trigger_source": trigger_source,
+            "system_run_id": system_run_id or "", "tenant_id": tenant_id,
+            "source_service": "enrichment-service",
+        }
+        async def write() -> None:
+            try:
+                await self._cms_client.emit_ai_spend_events([event])
+            except Exception as exc:
+                logger.warning("ai_spend_metering_failed", error=str(exc), operation=operation)
+        asyncio.create_task(write())
+
     async def _openai_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         client = self._clients["openai"]
         model = self.settings.model_for("openai")
         extra_headers = self._request_id_headers() or None
@@ -333,11 +372,12 @@ class LLMClient:
         content = response.choices[0].message.content
         if not content:
             raise LLMError("LLM returned empty response")
-        return content
+        usage = response.usage
+        return content, {"input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0), "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0)}
 
     async def _deepseek_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         # DeepSeek speaks the OpenAI chat-completions wire format, so the
         # call is literally identical to _openai_complete — only the client
         # instance (pointed at api.deepseek.com) differs. Kept as a separate
@@ -359,11 +399,12 @@ class LLMClient:
         content = response.choices[0].message.content
         if not content:
             raise LLMError("LLM returned empty response")
-        return content
+        usage = response.usage
+        return content, {"input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0), "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0)}
 
     async def _anthropic_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         client = self._clients["anthropic"]
         model = self.settings.model_for("anthropic")
         extra_headers = self._request_id_headers() or None
@@ -377,11 +418,12 @@ class LLMClient:
         )
         if not response.content:
             raise LLMError("LLM returned empty response")
-        return response.content[0].text
+        usage = response.usage
+        return response.content[0].text, {"input_tokens": int(getattr(usage, "input_tokens", 0) or 0), "output_tokens": int(getattr(usage, "output_tokens", 0) or 0)}
 
     async def _gemini_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         client = self._clients["gemini"]
         model = self.settings.model_for("gemini")
 
@@ -431,4 +473,5 @@ class LLMClient:
         text = getattr(response, "text", None)
         if not text:
             raise LLMError("LLM returned empty response")
-        return text
+        usage = getattr(response, "usage_metadata", None)
+        return text, {"input_tokens": int(getattr(usage, "prompt_token_count", 0) or 0), "output_tokens": int(getattr(usage, "candidates_token_count", 0) or 0), "thoughts_tokens": int(getattr(usage, "thoughts_token_count", 0) or 0)}
