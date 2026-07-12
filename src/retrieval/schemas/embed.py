@@ -25,6 +25,11 @@ class EmbedResponse(BaseModel):
     embeddings: list[list[float]]
     model: str
     dimensions: int
+    # Immutable vector-space identity (stage 10). space_id == "" means the space
+    # is lifecycle-not-ready (unresolved revision); consumers must not compare a
+    # vector whose space_id they cannot confirm.
+    space_id: str = ""
+    producer_id: str = ""
     # When content_ids are supplied, Enrichment also writes each vector to CMS.
     # These fields report that side effect so the caller can detect silent
     # CMS failures (the embedding response body itself stays successful so
@@ -45,3 +50,7 @@ class EmbedQueryResponse(BaseModel):
     embedding: list[float]
     model: str
     dimensions: int
+    # Query-side space identity — the comparability guard requires a query's
+    # space_id and only admits candidate rows stamped with the same ID.
+    space_id: str = ""
+    producer_id: str = ""

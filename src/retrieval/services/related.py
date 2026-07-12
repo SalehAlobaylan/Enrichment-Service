@@ -52,13 +52,14 @@ class RelatedService:
 
     async def related(self, req: RelatedRequest) -> RelatedResponse:
         with related_duration.time():
-            dense_q, sparse_q, anchor_text = await self._resolve_query(req)
+            dense_q, sparse_q, anchor_text, space_id = await self._resolve_query(req)
 
             # Dense + legacy sparse fan-out in parallel. Qwen is dense-only,
             # so sparse usually returns no hits; keep the path until the old
             # CMS sparse column/routes are removed.
             dense_task = self.cms_client.knn_dense(
                 dense_q,
+                space_id,
                 types=req.types,
                 k=self.settings.RELATED_K_DENSE_DEFAULT,
                 exclude_ids=req.exclude_ids,
@@ -105,8 +106,8 @@ class RelatedService:
 
     async def _resolve_query(
         self, req: RelatedRequest
-    ) -> tuple[list[float], dict[str, float], str | None]:
-        """Return (dense_vec, sparse_map, anchor_text_for_reranker).
+    ) -> tuple[list[float], dict[str, float], str | None, str]:
+        """Return (dense_vec, sparse_map, anchor_text_for_reranker, space_id).
 
         - content_id path: read vectors from CMS storage (avoid re-embedding;
           preserve exact write-time vectors). Anchor text is also fetched
@@ -117,10 +118,15 @@ class RelatedService:
         if req.content_id:
             anchor = await self.cms_client.get_content_embeddings(req.content_id)
             dense = anchor.get("embedding")
+            space_id = anchor.get("embedding_space_id")
             sparse = anchor.get("embedding_sparse")
             if not dense:
                 raise ValueError(
                     f"content_id={req.content_id} has no dense embedding stored"
+                )
+            if not space_id:
+                raise ValueError(
+                    f"content_id={req.content_id} has an unstamped dense embedding"
                 )
             if not sparse:
                 # Qwen-era item or old backfill gap — degrade to dense-only by
@@ -136,7 +142,7 @@ class RelatedService:
             # in _rerank_candidates so we don't pay the cost when rerank
             # is disabled. Return a sentinel marker (the content_id itself)
             # that the rerank path interprets correctly.
-            return dense, sparse, f"__cid__:{req.content_id}"
+            return dense, sparse, f"__cid__:{req.content_id}", space_id
 
         # text path — caller supplied raw text; use it for both embedding
         # AND reranking.
@@ -146,7 +152,12 @@ class RelatedService:
         # 0 hits and RRF falls through to dense, same as a missing-sparse anchor.
         sparse_maps = encoded["sparse"]
         sparse_q = sparse_maps[0] if sparse_maps else {}
-        return encoded["dense"][0], sparse_q, req.text
+        raw_desc = self.embedder.space_descriptor()
+        desc = raw_desc if isinstance(raw_desc, dict) else {}
+        space_id = desc.get("space_id", "")
+        if not space_id:
+            raise ValueError("query embedding space is unresolved")
+        return encoded["dense"][0], sparse_q, req.text, space_id
 
     async def _rerank_candidates(
         self, anchor_text: str, candidates: list[RelatedItem]

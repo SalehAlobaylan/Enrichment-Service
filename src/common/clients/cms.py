@@ -90,6 +90,8 @@ class CMSClient:
         topic_tags: list[str] | None = None,
         embedding_sparse: dict[str, float] | None = None,
         model: str | None = None,
+        space_id: str | None = None,
+        producer_id: str | None = None,
     ) -> dict[str, Any]:
         """Write text embedding to CMS.
 
@@ -97,9 +99,11 @@ class CMSClient:
         embedding_sparse  — legacy BGE-M3 lexical weights; Qwen is dense-only,
                             so this is always omitted now
         topic_tags        — optional topic tags extracted by tagging service
-        model             — embedder name (provenance). CMS records it on the
-                            row; vectors written WITHOUT it are treated as
-                            suspect and re-embedded by the reconcile sweep.
+        model             — embedder name (provenance display label).
+        space_id/producer_id — immutable vector-space identities (stage 10). Sent
+                            only when resolved (non-empty); an unresolved space
+                            leaves the row unstamped debt rather than stamping a
+                            false-stable identity.
         """
         payload: dict[str, Any] = {
             "embedding": embedding,
@@ -109,6 +113,10 @@ class CMSClient:
             payload["embedding_sparse"] = embedding_sparse
         if model:
             payload["model"] = model
+        if space_id:
+            payload["space_id"] = space_id
+        if producer_id:
+            payload["producer_id"] = producer_id
         return await self._request(
             "PATCH",
             f"/internal/content-items/{content_id}/embedding",
@@ -143,6 +151,7 @@ class CMSClient:
     async def knn_dense(
         self,
         vector: list[float],
+        space_id: str,
         types: list[str] | None = None,
         k: int = 50,
         exclude_ids: list[str] | None = None,
@@ -154,6 +163,7 @@ class CMSClient:
         """
         payload: dict[str, Any] = {
             "embedding": vector,
+            "space_id": space_id,
             "types": types or [],
             "k": k,
             "exclude_ids": exclude_ids or [],

@@ -16,6 +16,12 @@ def _model_items(model_manager) -> list[ModelInfoItem]:
     `type` is the role (embedder/reranker) so the admin dashboard can join it
     against the /ready `models` bool-map keys to show names + dims.
     """
+    raw_desc = (
+        model_manager.embedder.space_descriptor()
+        if model_manager.embedder.is_loaded
+        else {}
+    )
+    embedder_desc = raw_desc if isinstance(raw_desc, dict) else {}
     return [
         ModelInfoItem(
             name=model_manager.embedder.model_name,
@@ -24,6 +30,12 @@ def _model_items(model_manager) -> list[ModelInfoItem]:
             dimensions=model_manager.embedder.dimensions
             if model_manager.embedder.is_loaded
             else None,
+            revision=embedder_desc.get("revision"),
+            normalized=embedder_desc.get("normalized"),
+            pooling=embedder_desc.get("pooling"),
+            space_id=embedder_desc.get("space_id"),
+            producer_recipe=embedder_desc.get("producer_recipe"),
+            producer_id=embedder_desc.get("producer_id"),
         ),
         ModelInfoItem(
             name=model_manager.reranker.model_name,

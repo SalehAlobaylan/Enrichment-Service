@@ -20,6 +20,15 @@ class ModelInfoItem(BaseModel):
     loaded: bool
     type: str
     dimensions: int | None = None
+    # Immutable vector-space descriptor (stage 10 — Embedding & Model Lifecycle).
+    # Present on embedder items; absent/None on reranker (stateless, no space).
+    # revision == "" or space_id == "" ⇒ the space is lifecycle-not-ready.
+    revision: str | None = None
+    normalized: bool | None = None
+    pooling: str | None = None
+    space_id: str | None = None
+    producer_recipe: str | None = None
+    producer_id: str | None = None
 
 
 class ReadyResponse(BaseModel):

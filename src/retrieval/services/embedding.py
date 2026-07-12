@@ -10,6 +10,15 @@ from src.retrieval.schemas.embed import EmbedQueryResponse, EmbedResponse
 logger = get_logger(__name__)
 
 
+def _space_descriptor(embedder: EmbedderWrapper) -> dict:
+    """Return a real descriptor, tolerating legacy/test embedder doubles."""
+    factory = getattr(embedder, "space_descriptor", None)
+    if not callable(factory):
+        return {}
+    descriptor = factory()
+    return descriptor if isinstance(descriptor, dict) else {}
+
+
 class EmbeddingService:
     def __init__(
         self,
@@ -58,10 +67,13 @@ class EmbeddingService:
             except Exception as exc:
                 logger.warning("tag_extraction_task_failed", error=str(exc))
 
+        descriptor = _space_descriptor(self.embedder)
         response = EmbedResponse(
             embeddings=dense_vectors,
             model=self.embedder.model_name,
             dimensions=self.embedder.dimensions,
+            space_id=descriptor.get("space_id", ""),
+            producer_id=descriptor.get("producer_id", ""),
         )
         if tags_result is not None:
             response.tags = tags_result.tags
@@ -74,6 +86,7 @@ class EmbeddingService:
                 dense_vectors,
                 sparse_maps,
                 topic_tags,
+                descriptor,
             )
             response.write_back_status = status
             response.write_back_error = error
@@ -86,10 +99,13 @@ class EmbeddingService:
         # hybrid query search, which embeds with sparse internally).
         encoded = await asyncio.to_thread(self.embedder.encode, [text], False)
 
+        descriptor = _space_descriptor(self.embedder)
         return EmbedQueryResponse(
             embedding=encoded["dense"][0],
             model=self.embedder.model_name,
             dimensions=self.embedder.dimensions,
+            space_id=descriptor.get("space_id", ""),
+            producer_id=descriptor.get("producer_id", ""),
         )
 
     async def _write_back(
@@ -98,6 +114,7 @@ class EmbeddingService:
         vectors: list[list[float]],
         sparse_maps: list[dict[str, float]] | None,
         topic_tags: list[str] | None = None,
+        descriptor: dict | None = None,
     ) -> tuple[str, str | None]:
         """Write each (content_id, vector, [sparse]) to CMS.
 
@@ -124,6 +141,8 @@ class EmbeddingService:
                     topic_tags=topic_tags,
                     embedding_sparse=sparse,
                     model=self.embedder.model_name,
+                    space_id=descriptor.get("space_id") if descriptor else None,
+                    producer_id=descriptor.get("producer_id") if descriptor else None,
                 )
                 logger.info(
                     "embedding_writeback_complete",

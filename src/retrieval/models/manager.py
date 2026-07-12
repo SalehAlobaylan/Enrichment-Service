@@ -49,6 +49,7 @@ class ModelManager:
         self.embedder = EmbedderWrapper(
             model_name=settings.EMBEDDING_MODEL,
             cache_folder=settings.MODELS_DIR,
+            revision=settings.EMBEDDING_MODEL_REVISION,
         )
 
         if self._use_remote_reranker:

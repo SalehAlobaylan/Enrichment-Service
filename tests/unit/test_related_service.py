@@ -30,6 +30,7 @@ def mock_embedder() -> MagicMock:
         "dense": [[0.1] * 1024],
         "sparse": [{"100": 0.5, "200": 0.3}],
     }
+    e.space_descriptor.return_value = {"space_id": "space-text"}
     return e
 
 
@@ -133,6 +134,7 @@ async def test_related_content_id_path_skips_embed(
 ) -> None:
     mock_cms.get_content_embeddings.return_value = {
         "embedding": [0.1] * 1024,
+        "embedding_space_id": "space-text",
         "embedding_sparse": {"100": 0.5},
     }
     mock_cms.knn_dense.return_value = []
@@ -179,6 +181,7 @@ async def test_related_anchor_without_sparse_degrades_gracefully(
     falls through to dense-only."""
     mock_cms.get_content_embeddings.return_value = {
         "embedding": [0.1] * 1024,
+        "embedding_space_id": "space-text",
         "embedding_sparse": None,
     }
     mock_cms.knn_dense.return_value = [{"id": "x", "type": "TWEET"}]

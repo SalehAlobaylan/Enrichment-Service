@@ -49,6 +49,7 @@ Env is for boot-time infrastructure only. Retrieval **tuning knobs** (`RRF_K`, `
 | `PORT` | no | 5050 | HTTP port |
 | `ENV` | no | development | `production` makes missing keys/token fatal |
 | `EMBEDDING_MODEL` | no | `Qwen/Qwen3-Embedding-0.6B` | Text embedder selector |
+| `EMBEDDING_MODEL_REVISION` | no | empty | Immutable model commit; empty auto-resolves the loaded snapshot for lifecycle provenance |
 | `RERANKER_MODEL` | no | `BAAI/bge-reranker-v2-m3` | Cross-encoder selector |
 | `RERANK_ENABLED` | no | true | Reranker toggle |
 | `MODELS_DIR` | no | ./models | Model cache dir |
