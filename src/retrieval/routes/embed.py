@@ -23,7 +23,12 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
     cms_client = request.app.state.cms_client
     llm_client = request.app.state.llm_client
     tagger = TaggingService(llm_client) if body.extract_tags else None
-    service = EmbeddingService(model_manager.embedder, cms_client, tagger=tagger)
+    service = EmbeddingService(
+        model_manager.embedder,
+        cms_client,
+        tagger=tagger,
+        executors=getattr(request.app.state, "workload_executors", None),
+    )
 
     if not model_manager.embedder.is_loaded:
         raise EmbeddingError("Embedding model is not loaded")
@@ -32,12 +37,13 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
         raise EmbeddingError("content_ids length must match texts length")
 
     try:
-        return await service.embed(
-            body.texts,
-            content_ids=body.content_ids,
-            extract_tags=body.extract_tags,
-            extract_sparse=body.extract_sparse,
-        )
+        async with request.app.state.workload_admission.acquire("embedding"):
+            return await service.embed(
+                body.texts,
+                content_ids=body.content_ids,
+                extract_tags=body.extract_tags,
+                extract_sparse=body.extract_sparse,
+            )
     except EmbeddingError:
         raise
     except Exception as exc:
@@ -50,13 +56,18 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
 async def embed_query(body: EmbedQueryRequest, request: Request) -> EmbedQueryResponse:
     model_manager = request.app.state.model_manager
     cms_client = request.app.state.cms_client
-    service = EmbeddingService(model_manager.embedder, cms_client)
+    service = EmbeddingService(
+        model_manager.embedder,
+        cms_client,
+        executors=getattr(request.app.state, "workload_executors", None),
+    )
 
     if not model_manager.embedder.is_loaded:
         raise EmbeddingError("Embedding model is not loaded")
 
     try:
-        return await service.embed_query(body.text)
+        async with request.app.state.workload_admission.acquire("embedding"):
+            return await service.embed_query(body.text)
     except EmbeddingError:
         raise
     except Exception as exc:

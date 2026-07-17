@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 # Media Studio Clearance Autopilot (stage 6, Slice 4) — advisory chapter
 # proposals. The LLM drafts a publish/reject suggestion for the editorial review
@@ -24,21 +26,25 @@ class ChapterProposalItem(BaseModel):
 
 
 class ChapterProposalRequest(BaseModel):
-    items: list[ChapterProposalItem] = Field(..., min_length=1, max_length=25)
+    items: list[ChapterProposalItem] = Field(..., min_length=1, max_length=15)
 
 
 class ChapterProposalChecks(BaseModel):
-    duration_ok: bool = False
-    no_sponsor_overlap: bool = False
-    coherent_start: bool = False
-    coherent_end: bool = False
+    model_config = ConfigDict(extra="forbid")
+
+    duration_ok: bool = Field(strict=True)
+    no_sponsor_overlap: bool = Field(strict=True)
+    coherent_start: bool = Field(strict=True)
+    coherent_end: bool = Field(strict=True)
 
 
 class ChapterProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
-    proposal: str  # "publish" | "reject"
-    confidence: float = Field(ge=0.0, le=1.0)
-    rationale: str = Field(default="", max_length=300)
+    proposal: Literal["publish", "reject"]
+    confidence: float = Field(strict=True, ge=0.0, le=1.0)
+    rationale: str = Field(min_length=1, max_length=300)
     checked: ChapterProposalChecks
 
 

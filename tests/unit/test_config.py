@@ -104,3 +104,72 @@ def test_service_auth_token_fallbacks() -> None:
         CMS_BASE_URL="x",
     )
     assert s2.service_auth_token == "cms-token"
+
+
+def test_production_requires_dedicated_restart_capability() -> None:
+    settings = Settings(
+        ENV="production",
+        SERVICE_AUTH_TOKEN="service-token",
+        CMS_SERVICE_TOKEN="cms-token",
+        CMS_BASE_URL="http://cms.test",
+        LLM_FALLBACK_PROVIDERS="",
+    )
+    errors, _ = settings.validate_startup()
+    assert "ENRICHMENT_RESTART_TOKEN must be set in production" in errors
+
+
+def test_fallback_model_uses_its_own_provider_default() -> None:
+    settings = Settings(
+        LLM_PROVIDER="gemini",
+        LLM_MODEL="gemini-3.5-flash",
+        LLM_FALLBACK_PROVIDERS="openai,anthropic,deepseek",
+    )
+    assert settings.model_for("gemini") == "gemini-3.5-flash"
+    assert settings.model_for("openai") == "gpt-4o-mini"
+    assert settings.model_for("anthropic") == "claude-haiku-4-5-20251001"
+    assert settings.model_for("deepseek") == "deepseek-chat"
+
+
+def test_duplicate_fallback_provider_is_rejected() -> None:
+    settings = Settings(LLM_PROVIDER="none", LLM_FALLBACK_PROVIDERS="openai,openai")
+    errors, _ = settings.validate_startup()
+    assert any("duplicate provider" in error for error in errors)
+
+
+def test_role_and_remote_reranker_credentials_are_validated() -> None:
+    invalid_role = Settings(ENRICHMENT_ROLE="worker")
+    errors, _ = invalid_role.validate_startup()
+    assert "ENRICHMENT_ROLE must be one of: api, reranker" in errors
+
+    remote = Settings(
+        ENV="production",
+        SERVICE_AUTH_TOKEN="inbound",
+        ENRICHMENT_RESTART_TOKEN="restart",
+        RERANKER_BASE_URL="https://reranker.internal",
+        LLM_FALLBACK_PROVIDERS="",
+    )
+    errors, _ = remote.validate_startup()
+    assert "RERANKER_SERVICE_TOKEN must be set for a production remote reranker" in errors
+
+
+def test_production_does_not_accept_cms_credential_as_inbound_token() -> None:
+    settings = Settings(
+        ENV="production",
+        CMS_SERVICE_TOKEN="cms-only",
+        ENRICHMENT_RESTART_TOKEN="restart",
+        LLM_FALLBACK_PROVIDERS="",
+    )
+    errors, _ = settings.validate_startup()
+    assert settings.service_auth_token == ""
+    assert "SERVICE_AUTH_TOKEN must be set in production for inbound requests" in errors
+
+
+def test_reranker_role_does_not_require_unused_llm_configuration() -> None:
+    settings = Settings(
+        ENV="production",
+        ENRICHMENT_ROLE="reranker",
+        SERVICE_AUTH_TOKEN="reranker-inbound",
+        ENRICHMENT_RESTART_TOKEN="restart",
+    )
+    errors, _ = settings.validate_startup()
+    assert not any("LLM_" in error or "API_KEY" in error for error in errors)

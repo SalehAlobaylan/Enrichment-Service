@@ -17,6 +17,7 @@ import re
 
 from src.common.utils.logging import get_logger
 from src.common.utils.url_guard import validate_public_url
+from src.common.workload_admission import WorkloadExecutors
 from src.extraction.schemas.extract import (
     ApplePodcastRelatedResponse,
     AppleRelatedShow,
@@ -89,12 +90,19 @@ def _show_title(item: dict) -> str | None:
 class ApplePodcastService:
     """Scrape a podcast's Apple "You Might Also Like" shelf → related adamIds."""
 
-    def __init__(self, timeout_sec: int = 30):
+    def __init__(
+        self, timeout_sec: int = 30, executors: WorkloadExecutors | None = None
+    ) -> None:
         self.timeout_sec = timeout_sec
+        self.executors = executors
 
     async def fetch_related(
         self, collection_id: str, country: str = "us"
     ) -> ApplePodcastRelatedResponse:
+        if self.executors is not None:
+            return await self.executors.run(
+                "extraction", self._do_fetch_related, collection_id, country
+            )
         return await asyncio.to_thread(self._do_fetch_related, collection_id, country)
 
     def _do_fetch_related(

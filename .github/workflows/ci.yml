@@ -14,9 +14,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install dev deps
-        run: pip install -r requirements-dev.txt
+      - uses: astral-sh/setup-uv@v5
+      - name: Check locked dependency graph
+        run: make dependency-check
+      - name: Install locked dev environment
+        run: make install-dev
       - name: Lint
         run: make lint
-      - name: Unit tests
-        run: make test-unit
+      - name: Scoped type check
+        run: make typecheck
+      - name: Full test suite
+        run: make test

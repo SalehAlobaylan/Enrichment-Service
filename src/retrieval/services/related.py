@@ -3,8 +3,7 @@
 Pipeline:
   1. Resolve query vector — either fetch the dense vector for `content_id`
      from CMS, or embed `text` via Qwen3-Embedding-0.6B.
-  2. Query dense kNN against CMS. Sparse retrieval hooks are legacy no-ops
-     while the CMS schema still carries the retired sparse column.
+  2. Query dense kNN against CMS's matching immutable vector space.
   3. Rerank the top RERANK_INPUT_K candidates with a cross-encoder
      against the anchor text; reorder by rerank score. Skipped when
      req.rerank=False or when no anchor text is available.
@@ -15,7 +14,6 @@ relevance. Cross-encoders see both texts together and produce better quality
 on the small candidate set passed to them.
 """
 import asyncio
-from collections import defaultdict
 
 from src.common.clients.cms import CMSClient
 from src.common.config import Settings
@@ -25,8 +23,8 @@ from src.common.utils.metrics import (
     related_requests_total,
     rerank_duration,
     rerank_requests_total,
-    rrf_fusion_overlap_ratio,
 )
+from src.common.workload_admission import WorkloadAdmission, WorkloadExecutors
 from src.retrieval.models.embedder import EmbedderWrapper
 from src.retrieval.models.reranker import RerankerWrapper
 from src.retrieval.schemas.related import RelatedItem, RelatedRequest, RelatedResponse
@@ -41,52 +39,50 @@ class RelatedService:
         cms_client: CMSClient,
         settings: Settings,
         reranker: RerankerWrapper | None = None,
+        admission: WorkloadAdmission | None = None,
+        executors: WorkloadExecutors | None = None,
     ) -> None:
         self.embedder = embedder
         self.cms_client = cms_client
         self.settings = settings
         # Reranker is optional — None means rerank stage is unavailable
         # (e.g., model not loaded yet during cold start). All rerank=True
-        # requests still succeed; they just fall through to RRF order.
+        # requests still succeed; they just retain dense kNN order.
         self.reranker = reranker
+        self.admission = admission
+        self.executors = executors
+
+    async def _run_blocking(self, workload: str, function, *args):
+        if self.admission is None:
+            if self.executors is not None:
+                return await self.executors.run(workload, function, *args)
+            return await asyncio.to_thread(function, *args)
+        async with self.admission.acquire(workload):
+            if self.executors is not None:
+                return await self.executors.run(workload, function, *args)
+            return await asyncio.to_thread(function, *args)
 
     async def related(self, req: RelatedRequest) -> RelatedResponse:
         with related_duration.time():
-            dense_q, sparse_q, anchor_text, space_id = await self._resolve_query(req)
+            dense_q, anchor_text, space_id = await self._resolve_query(req)
 
-            # Dense + legacy sparse fan-out in parallel. Qwen is dense-only,
-            # so sparse usually returns no hits; keep the path until the old
-            # CMS sparse column/routes are removed.
-            dense_task = self.cms_client.knn_dense(
+            dense_hits = await self.cms_client.knn_dense(
                 dense_q,
                 space_id,
                 types=req.types,
+                formats=req.formats,
                 k=self.settings.RELATED_K_DENSE_DEFAULT,
                 exclude_ids=req.exclude_ids,
             )
-            sparse_task = self.cms_client.knn_sparse(
-                sparse_q,
-                types=req.types,
-                k=self.settings.RELATED_K_SPARSE_DEFAULT,
-                exclude_ids=req.exclude_ids,
-            )
-            dense_hits, sparse_hits = await asyncio.gather(dense_task, sparse_task)
-
-            fused = self._rrf_fuse(dense_hits, sparse_hits, k=self.settings.RRF_K)
-
-            # Gauge tracks how often dense + legacy sparse agree. It should
-            # trend toward zero as Qwen dense-only content replaces old data.
-            if fused:
-                overlap = sum(1 for r in fused if len(r.sources) == 2)
-                rrf_fusion_overlap_ratio.set(overlap / len(fused))
+            candidates = self._dense_results(dense_hits)
 
             # Slice B — rerank stage. Skipped when the caller disabled it,
             # the reranker model isn't loaded, or we don't have an anchor
             # text to compare against (e.g., rare content_id with no fields).
-            reranked = fused
+            reranked = candidates
             if req.rerank and self.reranker and self.reranker.is_loaded and anchor_text:
                 reranked = await self._rerank_candidates(
-                    anchor_text, fused[: self.settings.RERANK_INPUT_K]
+                    anchor_text, candidates[: self.settings.RERANK_INPUT_K]
                 )
 
         related_requests_total.labels(status="success").inc()
@@ -94,8 +90,7 @@ class RelatedService:
             "related_complete",
             anchor=("content_id" if req.content_id else "text"),
             dense_hits=len(dense_hits),
-            sparse_hits=len(sparse_hits),
-            fused_total=len(fused),
+            candidates_total=len(candidates),
             reranked=req.rerank
             and self.reranker is not None
             and self.reranker.is_loaded
@@ -106,8 +101,8 @@ class RelatedService:
 
     async def _resolve_query(
         self, req: RelatedRequest
-    ) -> tuple[list[float], dict[str, float], str | None, str]:
-        """Return (dense_vec, sparse_map, anchor_text_for_reranker, space_id).
+    ) -> tuple[list[float], str | None, str]:
+        """Return (dense_vec, anchor_text_for_reranker, space_id).
 
         - content_id path: read vectors from CMS storage (avoid re-embedding;
           preserve exact write-time vectors). Anchor text is also fetched
@@ -119,7 +114,6 @@ class RelatedService:
             anchor = await self.cms_client.get_content_embeddings(req.content_id)
             dense = anchor.get("embedding")
             space_id = anchor.get("embedding_space_id")
-            sparse = anchor.get("embedding_sparse")
             if not dense:
                 raise ValueError(
                     f"content_id={req.content_id} has no dense embedding stored"
@@ -128,36 +122,21 @@ class RelatedService:
                 raise ValueError(
                     f"content_id={req.content_id} has an unstamped dense embedding"
                 )
-            if not sparse:
-                # Qwen-era item or old backfill gap — degrade to dense-only by
-                # passing an empty sparse map. CMS short-circuits sparse kNN to
-                # 0 hits and RRF falls through to dense-only.
-                logger.warning(
-                    "related_anchor_missing_sparse",
-                    content_id=req.content_id,
-                    hint="dense-only retrieval; embedding_sparse is legacy",
-                )
-                sparse = {}
             # Anchor text for reranker: fetched on-demand from batch_text
             # in _rerank_candidates so we don't pay the cost when rerank
             # is disabled. Return a sentinel marker (the content_id itself)
             # that the rerank path interprets correctly.
-            return dense, sparse, f"__cid__:{req.content_id}", space_id
+            return dense, f"__cid__:{req.content_id}", space_id
 
         # text path — caller supplied raw text; use it for both embedding
         # AND reranking.
-        encoded = await asyncio.to_thread(self.embedder.encode, [req.text], True)
-        # Qwen is dense-only → encoded["sparse"] is None. Degrade to dense-only
-        # by passing an empty sparse map; CMS short-circuits the sparse kNN to
-        # 0 hits and RRF falls through to dense, same as a missing-sparse anchor.
-        sparse_maps = encoded["sparse"]
-        sparse_q = sparse_maps[0] if sparse_maps else {}
+        encoded = await self._run_blocking("embedding", self.embedder.encode, [req.text], False)
         raw_desc = self.embedder.space_descriptor()
         desc = raw_desc if isinstance(raw_desc, dict) else {}
         space_id = desc.get("space_id", "")
         if not space_id:
             raise ValueError("query embedding space is unresolved")
-        return encoded["dense"][0], sparse_q, req.text, space_id
+        return encoded["dense"][0], req.text, space_id
 
     async def _rerank_candidates(
         self, anchor_text: str, candidates: list[RelatedItem]
@@ -177,7 +156,7 @@ class RelatedService:
             batch = await self.cms_client.batch_text(candidate_ids)
             items_by_id = {item["id"]: item for item in batch}
         except Exception as exc:
-            # CMS unavailable — fall back to RRF order. The reranker stage
+            # CMS unavailable — fall back to dense kNN order. The reranker stage
             # is enrichment, not a hard requirement; never fail the request.
             logger.warning("rerank_batch_text_failed", error=str(exc))
             rerank_requests_total.labels(status="failure").inc()
@@ -215,15 +194,15 @@ class RelatedService:
             return candidates
 
         # Degrade gracefully on any rerank failure: reranking is enrichment,
-        # not a hard requirement — fall back to RRF order rather than failing
+        # not a hard requirement — fall back to dense kNN order rather than failing
         # the whole /related or news-slide request. This is a PERMANENT,
         # general safeguard (keep it whether or not the reranker is split out);
         # it also happens to cover the extra failure mode the TEMP split adds
         # (the reranker being a remote HTTP call — see ModelManager).
         try:
             with rerank_duration.time():
-                scores = await asyncio.to_thread(
-                    self.reranker.rerank, anchor_text, candidate_texts
+                scores = await self._run_blocking(
+                    "rerank", self.reranker.rerank, anchor_text, candidate_texts
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("rerank_scoring_failed", error=str(exc))
@@ -233,7 +212,7 @@ class RelatedService:
 
         # Build new ordered list: reranked items first (by rerank score
         # desc, stable tie-break by content_id); any items that didn't get
-        # reranked tacked on at the end in their RRF order — they shouldn't
+        # reranked tacked on at the end in their dense kNN order — they shouldn't
         # outrank anything the reranker actually scored.
         reranked: list[RelatedItem] = []
         ranked_ids: set[str] = set()
@@ -244,6 +223,7 @@ class RelatedService:
                     content_id=c.content_id,
                     score=round(float(score), 6),
                     content_type=c.content_type,
+                    content_format=c.content_format,
                     sources=c.sources,
                     rerank_score=round(float(score), 6),
                     published_at=item.get("published_at"),
@@ -254,7 +234,7 @@ class RelatedService:
 
         reranked.sort(key=lambda r: (-r.score, r.content_id))
 
-        # Items dropped from the rerank pool — keep them in RRF order as
+        # Items dropped from the rerank pool — keep them in dense kNN order as
         # tail candidates. (Typically zero items, but defensive.)
         tail = [c for c in candidates if c.content_id not in ranked_ids]
         return reranked + tail
@@ -284,57 +264,30 @@ class RelatedService:
         return " ".join(parts)[:300]
 
     @staticmethod
-    def _rrf_fuse(
-        dense_hits: list[dict],
-        sparse_hits: list[dict],
-        k: int = 60,
-    ) -> list[RelatedItem]:
-        """Reciprocal Rank Fusion.
+    def _dense_results(dense_hits: list[dict]) -> list[RelatedItem]:
+        """Map CMS dense kNN hits to the response contract without fusion.
 
-        For each item, sum 1/(k + rank_r) across rankings it appears in.
-        Higher fused score = better. Items appearing in BOTH rankings get a
-        natural boost since they accumulate two terms.
-
-        k is the RRF dampening constant — standard literature value is 60.
-        Larger k flattens the curve (later ranks count more); smaller k
-        concentrates score in the top few. Tunable via env (RRF_K).
+        Qwen produces a single dense vector, so the CMS kNN order and score
+        are the canonical retrieval provenance until the optional reranker
+        replaces them. Duplicate IDs are ignored defensively while retaining
+        the first (best-ranked) hit.
         """
-        scores: dict[str, float] = defaultdict(float)
-        sources: dict[str, set[str]] = defaultdict(set)
-        meta: dict[str, dict] = {}
-
-        for rank, hit in enumerate(dense_hits):
-            cid = hit["id"]
-            scores[cid] += 1.0 / (k + rank + 1)
-            sources[cid].add("dense")
-            meta[cid] = hit  # keep at least one copy for type lookup
-
-        for rank, hit in enumerate(sparse_hits):
-            cid = hit["id"]
-            scores[cid] += 1.0 / (k + rank + 1)
-            sources[cid].add("sparse")
-            meta.setdefault(cid, hit)
-
-        # Sort fused descending. Stable tiebreak by content_id for
-        # deterministic test assertions.
-        ranked = sorted(
-            scores.items(), key=lambda kv: (-kv[1], kv[0])
-        )
-
-        return [
-            RelatedItem(
-                content_id=cid,
-                score=round(score, 6),
-                content_type=meta[cid].get("type"),
-                sources=sorted(sources[cid]),
-                # Hydrate ranking-rule inputs from the kNN response so
-                # freshness decay + source diversity still work when the
-                # rerank stage is skipped (cold start, RERANK_ENABLED=False,
-                # or no anchor text). Reranker overwrites these later with
-                # the same values from batch_text — no behavioral change
-                # to the rerank path.
-                published_at=meta[cid].get("published_at"),
-                source_name=meta[cid].get("source_name"),
+        results: list[RelatedItem] = []
+        seen: set[str] = set()
+        for hit in dense_hits:
+            content_id = str(hit.get("id") or "")
+            if not content_id or content_id in seen:
+                continue
+            seen.add(content_id)
+            results.append(
+                RelatedItem(
+                    content_id=content_id,
+                    score=round(float(hit.get("score") or 0.0), 6),
+                    content_type=hit.get("type"),
+                    content_format=hit.get("format"),
+                    sources=["dense"],
+                    published_at=hit.get("published_at"),
+                    source_name=hit.get("source_name"),
+                )
             )
-            for cid, score in ranked
-        ]
+        return results

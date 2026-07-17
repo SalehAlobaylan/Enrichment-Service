@@ -60,6 +60,18 @@ llm_retries_total = Counter(
     ["provider", "operation"],
 )
 
+llm_attempts_total = Counter(
+    "enrichment_llm_attempts_total",
+    "Individual provider attempts (status: success|failure|timeout).",
+    ["provider", "operation", "status"],
+)
+
+llm_deadline_exhaustions_total = Counter(
+    "enrichment_llm_deadline_exhaustions_total",
+    "LLM operations stopped because their end-to-end request budget expired.",
+    ["operation"],
+)
+
 llm_fallback_invocations_total = Counter(
     "enrichment_llm_fallback_invocations_total",
     "LLM fallback invocations — when the primary provider failed and a "
@@ -86,7 +98,7 @@ tag_extractions_total = Counter(
     ["status"],
 )
 
-# ─── Slice A — hybrid retrieval (/v1/related) ───────────────
+# ─── Slice A — dense retrieval (/v1/related) ────────────────
 
 related_requests_total = Counter(
     "enrichment_related_requests_total",
@@ -96,28 +108,21 @@ related_requests_total = Counter(
 
 related_duration = Histogram(
     "enrichment_related_duration_seconds",
-    "POST /v1/related total time (resolve query + 2× kNN + RRF fusion)",
+    "POST /v1/related total time (resolve query + dense kNN)",
     buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5],
-)
-
-rrf_fusion_overlap_ratio = Gauge(
-    "enrichment_rrf_fusion_overlap_ratio",
-    "Fraction of fused results that came from both dense + sparse rankings. "
-    "High = the two modes are redundant for this corpus; low = hybrid is "
-    "pulling its weight by surfacing items that pure dense or sparse miss.",
 )
 
 # ─── Slice B — reranker + News-feed slide assembly ──────────
 
 rerank_duration = Histogram(
     "enrichment_rerank_duration_seconds",
-    "Cross-encoder rerank inference time over the post-RRF candidate set",
+    "Cross-encoder rerank inference time over the dense candidate set",
     buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5],
 )
 
 rerank_requests_total = Counter(
     "enrichment_rerank_requests_total",
-    "Rerank stage outcomes (success | failure — failure falls back to RRF order)",
+    "Rerank stage outcomes (success | failure — failure falls back to dense kNN order)",
     ["status"],
 )
 
@@ -125,6 +130,11 @@ feed_news_requests_total = Counter(
     "enrichment_feed_news_requests_total",
     "POST /v1/feed/news/slide outcomes",
     ["status"],
+)
+
+feed_news_compatibility_requests_total = Counter(
+    "enrichment_feed_news_compatibility_requests_total",
+    "Calls to the deprecated internal /v1/feed/news/slide compatibility helper.",
 )
 
 feed_news_duration = Histogram(
@@ -146,7 +156,7 @@ feed_slide_cache_misses_total = Counter(
 ranking_rules_dropped_total = Counter(
     "enrichment_ranking_rules_dropped_total",
     "Items dropped by each ranking rule "
-    "(rule: freshness | source_diversity | type_quotas)",
+    "(rule: freshness | source_diversity | format_quotas)",
     ["rule"],
 )
 
@@ -163,6 +173,45 @@ llm_errors_total = Counter(
     ["provider", "error_type"],
 )
 
+llm_output_invalid_total = Counter(
+    "enrichment_llm_output_invalid_total",
+    "LLM outputs rejected by a strict operation-specific contract.",
+    ["operation", "reason"],
+)
+
+workload_admission_total = Counter(
+    "enrichment_workload_admission_total",
+    "Expensive-work admission outcomes.",
+    ["workload", "outcome"],
+)
+
+workload_in_flight = Gauge(
+    "enrichment_workload_in_flight",
+    "Currently admitted expensive workloads.",
+    ["workload"],
+)
+
+ai_spend_delivery_total = Counter(
+    "enrichment_ai_spend_delivery_total",
+    "AI spend delivery outcomes.",
+    ["outcome"],
+)
+
+ai_spend_queue_depth = Gauge(
+    "enrichment_ai_spend_queue_depth",
+    "Queued AI spend events awaiting delivery.",
+)
+
+ai_spend_queue_oldest_age_seconds = Gauge(
+    "enrichment_ai_spend_queue_oldest_age_seconds",
+    "Age of the oldest delivered AI spend event.",
+)
+
+ai_spend_delivery_retries_total = Counter(
+    "enrichment_ai_spend_delivery_retries_total",
+    "AI spend delivery retries.",
+)
+
 # ─── CMS write-back + circuit breaker ───────────────────────
 
 cms_writeback_total = Counter(
@@ -174,6 +223,7 @@ cms_writeback_total = Counter(
 circuit_state = Gauge(
     "enrichment_circuit_state",
     "Circuit breaker state (0=closed, 1=open, 2=half_open)",
+    ["breaker"],
 )
 
 model_loaded = Gauge(

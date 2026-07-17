@@ -1,14 +1,20 @@
 import asyncio
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from html import unescape
 from urllib.parse import urljoin, urlparse
 
+from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.utils import CURL_WRITEFUNC_ERROR
 from lxml import etree
+from scrapling import Selector
 
 from src.common.middleware.error_handler import ExtractionError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import extraction_duration, extractions_total
 from src.common.utils.url_guard import UnsafeURLError, validate_public_url
+from src.common.workload_admission import WorkloadExecutors
 from src.extraction.schemas.extract import (
     ExtractResponse,
     FeedExtractResponse,
@@ -16,36 +22,63 @@ from src.extraction.schemas.extract import (
 )
 
 
-def _get_fetcher():
-    """Import Scrapling's Fetcher LAZILY (not at module top).
+@dataclass
+class _BoundedPage:
+    body: bytes
+    status: int
+    headers: Mapping[str, str]
+    _selector: Selector
 
-    Scrapling eagerly imports Playwright deep in its import chain
-    (scrapling.fetchers → engines.static → toolbelt.convertor → playwright),
-    and Playwright is intentionally NOT in the production image (Phase 8 — it's
-    dev-only). A module-top `from scrapling.fetchers import Fetcher` therefore
-    crashes the WHOLE app at startup with `ModuleNotFoundError: No module named
-    'playwright'` — taking down embed/related/rerank/LLM too, including the
-    embedder-only and reranker-only split deployments that never call
-    /v1/extract.
+    def css(self, selector: str):
+        return self._selector.css(selector)
 
-    Importing here keeps the app importable everywhere; /v1/extract then fails
-    at call time with a clear ExtractionError instead of killing the process.
 
-    NOTE: this is a PERMANENT, general fix — it is NOT part of the temporary
-    reranker-split workaround. It's the correct behaviour whether the service
-    runs as a monolith or split, because Playwright is dev-only in production
-    (Phase 8) regardless. KEEP it when the reranker split is collapsed back to
-    a single deployment.
+class _BoundedFetcher:
+    """Manual-redirect transport that aborts receipt before over-allocation."""
+
+    def get(self, url: str, **kwargs) -> _BoundedPage:
+        chunks = bytearray()
+        exceeded = False
+
+        def receive(chunk: bytes) -> int:
+            nonlocal exceeded
+            if len(chunks) + len(chunk) > MAX_RESPONSE_BYTES:
+                exceeded = True
+                return CURL_WRITEFUNC_ERROR
+            chunks.extend(chunk)
+            return len(chunk)
+
+        try:
+            response = cffi_requests.get(
+                url,
+                timeout=kwargs.get("timeout"),
+                allow_redirects=kwargs.get("follow_redirects", False),
+                max_redirects=kwargs.get("max_redirects", 0),
+                impersonate="chrome" if kwargs.get("stealthy_headers") else None,
+                content_callback=receive,
+            )
+        except Exception as exc:  # curl reports a write-callback abort as a request error
+            if exceeded:
+                raise ExtractionError("Extraction response exceeded size limit") from exc
+            raise
+        if exceeded:
+            raise ExtractionError("Extraction response exceeded size limit")
+        body = bytes(chunks)
+        return _BoundedPage(
+            body=body,
+            status=response.status_code,
+            headers=dict(response.headers),
+            _selector=Selector(body, url=url),
+        )
+
+
+def _get_fetcher() -> _BoundedFetcher:
+    """Return a bounded curl-cffi transport parsed by Scrapling Selector.
+
+    The transport does not load a browser/Playwright runtime. Its write callback
+    stops the transfer at the byte ceiling before HTML/XML parser allocation.
     """
-    try:
-        from scrapling.defaults import Fetcher
-
-        return Fetcher
-    except Exception as exc:  # noqa: BLE001  (ModuleNotFoundError: playwright, etc.)
-        raise ExtractionError(
-            "Web extraction is unavailable in this deployment "
-            "(Scrapling/Playwright not installed)."
-        ) from exc
+    return _BoundedFetcher()
 
 
 def _looks_like_feed(head: bytes) -> bool:
@@ -55,6 +88,18 @@ logger = get_logger(__name__)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _IMG_SRC_RE = re.compile(r'<img[^>]+src="([^"]+)"', re.IGNORECASE)
+MAX_RESPONSE_BYTES = 2_000_000
+MAX_FEED_ITEMS = 100
+MAX_EXTRACTED_TEXT_CHARS = 50_000
+MAX_EXTRACTED_HTML_CHARS = 100_000
+_ALLOWED_CONTENT_TYPES = (
+    "text/html",
+    "application/xhtml+xml",
+    "application/rss+xml",
+    "application/atom+xml",
+    "application/xml",
+    "text/xml",
+)
 
 
 def _strip_html(value: str | None) -> str:
@@ -87,8 +132,16 @@ class ExtractionService:
     CDATA-safe) and the latest item is returned so pasting a feed URL autofills.
     """
 
-    def __init__(self, timeout_sec: int = 30):
+    def __init__(
+        self, timeout_sec: int = 30, executors: WorkloadExecutors | None = None
+    ) -> None:
         self.timeout_sec = timeout_sec
+        self.executors = executors
+
+    async def _run_blocking(self, function, *args):
+        if self.executors is not None:
+            return await self.executors.run("extraction", function, *args)
+        return await asyncio.to_thread(function, *args)
 
     @staticmethod
     def _guard_url(url: str) -> None:
@@ -96,19 +149,20 @@ class ExtractionService:
         try:
             validate_public_url(url)
         except UnsafeURLError as exc:
-            raise ExtractionError(f"Refusing to fetch unsafe URL: {exc}") from exc
+            raise ExtractionError("Extraction URL is not permitted") from exc
 
     async def extract(self, url: str, include_html: bool = False) -> ExtractResponse:
         with extraction_duration.time():
-            result = await asyncio.to_thread(self._do_extract, url, include_html)
+            result = await self._run_blocking(self._do_extract, url, include_html)
 
         extractions_total.labels(status="success").inc()
         return result
 
     def _do_extract(self, url: str, include_html: bool) -> ExtractResponse:
-        self._guard_url(url)
-        page = _get_fetcher().get(url, timeout=self.timeout_sec, stealthy_headers=True)
+        url, page = self._fetch_checked(url)
+        self._enforce_content_type(page)
         raw = page.body or b""
+        self._enforce_body_limit(raw)
 
         if _looks_like_feed(raw[:1024].lstrip().lower()):
             items, site_name = self._parse_feed(url, raw)
@@ -120,14 +174,15 @@ class ExtractionService:
     # ── Whole-feed extraction (all items) ──────────────────────
     async def extract_feed(self, url: str) -> FeedExtractResponse:
         with extraction_duration.time():
-            result = await asyncio.to_thread(self._do_extract_feed, url)
+            result = await self._run_blocking(self._do_extract_feed, url)
         extractions_total.labels(status="success").inc()
         return result
 
     def _do_extract_feed(self, url: str) -> FeedExtractResponse:
-        self._guard_url(url)
-        page = _get_fetcher().get(url, timeout=self.timeout_sec, stealthy_headers=True)
+        url, page = self._fetch_checked(url)
+        self._enforce_content_type(page)
         raw = page.body or b""
+        self._enforce_body_limit(raw)
 
         if _looks_like_feed(raw[:1024].lstrip().lower()):
             items, site_name = self._parse_feed(url, raw)
@@ -155,6 +210,49 @@ class ExtractionService:
                 )
             ],
         )
+
+    def _fetch_checked(self, url: str):
+        """Fetch only validated redirect hops; Scrapling never follows redirects itself."""
+        current = url
+        for _ in range(5):
+            self._guard_url(current)
+            page = _get_fetcher().get(
+                current,
+                timeout=self.timeout_sec,
+                stealthy_headers=True,
+                follow_redirects=False,
+                max_redirects=0,
+            )
+            status = int(getattr(page, "status", 200))
+            if status not in (301, 302, 303, 307, 308):
+                return current, page
+            headers = getattr(page, "headers", {}) or {}
+            location = headers.get("location") or headers.get("Location")
+            if not location:
+                raise ExtractionError("Redirect response is missing a location")
+            next_url = urljoin(current, str(location))
+            if urlparse(current).scheme == "https" and urlparse(next_url).scheme != "https":
+                raise ExtractionError("Refusing HTTPS-to-HTTP redirect")
+            current = next_url
+        raise ExtractionError("Too many redirects")
+
+    @staticmethod
+    def _enforce_body_limit(raw: bytes | str) -> None:
+        size = len(raw.encode() if isinstance(raw, str) else raw)
+        if size > MAX_RESPONSE_BYTES:
+            raise ExtractionError("Extraction response exceeded size limit")
+
+    @staticmethod
+    def _enforce_content_type(page) -> None:
+        headers = getattr(page, "headers", {}) or {}
+        if not isinstance(headers, Mapping):
+            return
+        content_type = headers.get("content-type") or headers.get("Content-Type")
+        if not content_type:
+            return
+        normalized = str(content_type).split(";", 1)[0].strip().lower()
+        if normalized not in _ALLOWED_CONTENT_TYPES:
+            raise ExtractionError("Extraction response has unsupported content type")
 
     # ── RSS / Atom parsing (lxml XML, CDATA-safe) ──────────────
     def _parse_feed(self, url: str, raw: bytes) -> tuple[list[dict], str | None]:
@@ -188,7 +286,7 @@ class ExtractionService:
         if site_el and site_el[0].text:
             site_name = site_el[0].text.strip()
 
-        items = [self._feed_item(el, url) for el in elements]
+        items = [self._feed_item(el, url) for el in elements[:MAX_FEED_ITEMS]]
         return items, site_name
 
     @staticmethod
@@ -243,7 +341,7 @@ class ExtractionService:
 
         return {
             "title": title,
-            "text": description or "",
+            "text": (description or "")[:MAX_EXTRACTED_TEXT_CHARS],
             "excerpt": (description[:300] if description else None),
             "url": article_url,
             "image_url": image,
@@ -295,13 +393,13 @@ class ExtractionService:
             page, "property", "og:description"
         )
 
-        body_text = self._body_text(page)
+        body_text = self._body_text(page)[:MAX_EXTRACTED_TEXT_CHARS]
 
         html_content = None
         if include_html:
             node = _first(page, "article") or _first(page, "main")
             if node is not None:
-                html_content = node.html_content
+                html_content = node.html_content[:MAX_EXTRACTED_HTML_CHARS]
 
         return ExtractResponse(
             title=title,
@@ -323,12 +421,12 @@ class ExtractionService:
             if el is not None:
                 text = el.get_all_text()
                 if text and text.strip():
-                    return text.strip()
+                    return text.strip()[:MAX_EXTRACTED_TEXT_CHARS]
 
         body = _first(page, "body")
         if body is not None:
             text = body.get_all_text()
             if text:
-                return text.strip()
+                return text.strip()[:MAX_EXTRACTED_TEXT_CHARS]
 
         return ""

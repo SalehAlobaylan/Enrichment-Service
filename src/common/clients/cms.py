@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -11,6 +11,14 @@ from src.common.utils.metrics import cms_writeback_total
 logger = get_logger(__name__)
 
 
+def _is_countable_cms_failure(exc: Exception) -> bool:
+    """Only dependency availability failures may open the shared CMS breaker."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = cast(httpx.HTTPStatusError, exc).response.status_code
+        return status == 429 or status >= 500
+    return isinstance(exc, httpx.HTTPError)
+
+
 class CMSClient:
     def __init__(self, settings: Settings):
         raw_base_url = settings.CMS_BASE_URL.rstrip("/")
@@ -20,14 +28,22 @@ class CMSClient:
             if raw_base_url.endswith("/internal")
             else raw_base_url
         )
-        # Token CMS's /internal/* middleware checks. Fall back to the shared
-        # service token so the documented single-token dev setup works even when
-        # CMS_SERVICE_TOKEN isn't set explicitly (matches inbound-auth behaviour).
-        self.token = settings.CMS_SERVICE_TOKEN or settings.service_auth_token
+        # This client is the Enrichment principal at CMS. The legacy token is
+        # accepted only by Settings' development/rollout compatibility path.
+        self.token = settings.cms_writeback_token
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=settings.CB_FAILURE_THRESHOLD,
             reset_timeout_sec=settings.CB_RESET_TIMEOUT_SEC,
             half_open_requests=settings.CB_HALF_OPEN_REQUESTS,
+            metric_name="cms_core",
+        )
+        # AI-spend delivery is best-effort. Its own dependency failures must
+        # never open the core breaker that protects retrieval and write-back.
+        self.telemetry_circuit_breaker = CircuitBreaker(
+            failure_threshold=settings.CB_FAILURE_THRESHOLD,
+            reset_timeout_sec=settings.CB_RESET_TIMEOUT_SEC,
+            half_open_requests=settings.CB_HALF_OPEN_REQUESTS,
+            metric_name="cms_telemetry",
         )
         headers = {
             "Content-Type": "application/json",
@@ -49,39 +65,6 @@ class CMSClient:
             return resp.status_code == 200
         except httpx.HTTPError:
             return False
-
-    async def create_transcript(
-        self,
-        content_item_id: str,
-        full_text: str,
-        language: str,
-        word_timestamps: list[dict] | None = None,
-        summary: str | None = None,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "content_item_id": content_item_id,
-            "full_text": full_text,
-            "language": language,
-        }
-        if word_timestamps:
-            payload["word_timestamps"] = word_timestamps
-        if summary:
-            payload["summary"] = summary
-
-        return await self._request(
-            "POST",
-            "/internal/transcripts",
-            json=payload,
-            metric_label="create_transcript",
-        )
-
-    async def link_transcript(self, content_id: str, transcript_id: str) -> dict[str, Any]:
-        return await self._request(
-            "PATCH",
-            f"/internal/content-items/{content_id}/transcript",
-            json={"transcript_id": transcript_id},
-            metric_label="link_transcript",
-        )
 
     async def store_embedding(
         self,
@@ -132,6 +115,17 @@ class CMSClient:
             metric_label="update_content",
         )
 
+    async def merge_enrichment_metadata(
+        self, content_id: str, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Persist only the fields Enrichment owns, preserving all other metadata."""
+        return await self._request(
+            "PATCH",
+            f"/internal/content-items/{content_id}/enrichment-metadata",
+            json={"fields": fields},
+            metric_label="merge_enrichment_metadata",
+        )
+
     async def emit_ai_spend_events(self, events: list[dict[str, Any]]) -> None:
         """Best-effort governor metering. Callers schedule this and never await it.
 
@@ -141,17 +135,18 @@ class CMSClient:
         await self._request(
             "POST", "/internal/ai-spend/events", json={"events": events},
             metric_label="emit_ai_spend_events",
+            circuit_breaker=self.telemetry_circuit_breaker,
         )
 
-    # ─── Slice A: hybrid retrieval ──────────────────────────────────
+    # ─── Slice A: dense retrieval ───────────────────────────────────
 
     async def get_content_embeddings(self, content_id: str) -> dict[str, Any]:
-        """GET /internal/content-items/:id/embeddings — fetch (dense, sparse).
+        """GET /internal/content-items/:id/embeddings — fetch dense vector identity.
 
         Used by /v1/related when the caller passes content_id instead of text
         — avoids re-embedding what's already stored. Returns:
             {"embedding": list[float] | None,
-             "embedding_sparse": dict[str, float] | None}
+             "embedding_space_id": str | None}
         """
         return await self._request(
             "GET",
@@ -164,6 +159,7 @@ class CMSClient:
         vector: list[float],
         space_id: str,
         types: list[str] | None = None,
+        formats: list[str] | None = None,
         k: int = 50,
         exclude_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
@@ -176,6 +172,7 @@ class CMSClient:
             "embedding": vector,
             "space_id": space_id,
             "types": types or [],
+            "formats": formats or [],
             "k": k,
             "exclude_ids": exclude_ids or [],
         }
@@ -187,37 +184,11 @@ class CMSClient:
         )
         return resp.get("hits", [])
 
-    async def knn_sparse(
-        self,
-        sparse_map: dict[str, float],
-        types: list[str] | None = None,
-        k: int = 50,
-        exclude_ids: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """POST /internal/content-items/knn-sparse — inner-product kNN against `embedding_sparse`.
-
-        sparse_map is BGE-M3's lexical-weights output: {token_id_str: weight}.
-        Returns the `hits` list directly.
-        """
-        payload: dict[str, Any] = {
-            "embedding_sparse": sparse_map,
-            "types": types or [],
-            "k": k,
-            "exclude_ids": exclude_ids or [],
-        }
-        resp = await self._request(
-            "POST",
-            "/internal/content-items/knn-sparse",
-            json=payload,
-            metric_label="knn_sparse",
-        )
-        return resp.get("hits", [])
-
     # ─── Slice B: reranker batch text + anchor fetch ────────────────
 
     async def batch_text(self, ids: list[str]) -> list[dict[str, Any]]:
         """POST /internal/content-items/batch-text — fetch text + metadata
-        for a small set of ids (typically the post-RRF candidate pool that
+        for a small set of ids (typically the post-dense-kNN candidate pool that
         the reranker stage scores).
 
         Returns the `items` list directly. Each item has:
@@ -269,6 +240,7 @@ class CMSClient:
         path: str,
         json: dict[str, Any] | None = None,
         metric_label: str = "unknown",
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> dict[str, Any]:
         async def _do_request() -> dict[str, Any]:
             url = self._build_url(path)
@@ -279,7 +251,9 @@ class CMSClient:
             return resp.json()
 
         try:
-            result = await self.circuit_breaker.execute(_do_request)
+            result = await (circuit_breaker or self.circuit_breaker).execute(
+                _do_request, count_failure=_is_countable_cms_failure
+            )
             cms_writeback_total.labels(endpoint=metric_label, status="success").inc()
             return result
         except Exception as exc:

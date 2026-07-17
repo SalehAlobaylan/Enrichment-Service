@@ -66,9 +66,13 @@ async def test_embed_query(service: EmbeddingService, mock_embedder: MagicMock) 
 
 @pytest.mark.asyncio
 async def test_embed_sparse_passed_to_writeback(
-    service: EmbeddingService, mock_cms: AsyncMock
+    service: EmbeddingService, mock_embedder: MagicMock, mock_cms: AsyncMock
 ) -> None:
     """When extract_sparse=True, the sparse map reaches cms.store_embedding."""
+    mock_embedder.encode.return_value = {
+        "dense": [[0.1] * 1024],
+        "sparse": [{"100": 0.5}],
+    }
     await service.embed(
         ["hello"],
         content_ids=["id-1"],
@@ -90,6 +94,29 @@ async def test_embed_sparse_none_when_not_requested(
     await service.embed(["hello"], content_ids=["id-1"])
     call_kwargs = mock_cms.store_embedding.call_args.kwargs
     assert call_kwargs["embedding_sparse"] is None
+
+
+@pytest.mark.asyncio
+async def test_writeback_rejects_mismatched_vectors_without_cms_call(
+    service: EmbeddingService, mock_cms: AsyncMock
+) -> None:
+    status, error = await service._write_back(
+        ["id-1", "id-2"], [[0.1] * 1024], None
+    )
+    assert (status, error) == ("failed", "writeback_length_mismatch")
+    mock_cms.store_embedding.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_writeback_reports_partial_failure_without_dropping_other_items(
+    service: EmbeddingService, mock_cms: AsyncMock
+) -> None:
+    mock_cms.store_embedding.side_effect = [None, RuntimeError("CMS unavailable")]
+    status, error = await service._write_back(
+        ["id-1", "id-2"], [[0.1] * 1024, [0.2] * 1024], None
+    )
+    assert (status, error) == ("failed", "cms_writeback_failed")
+    assert mock_cms.store_embedding.await_count == 2
 
 
 def test_text_truncation() -> None:

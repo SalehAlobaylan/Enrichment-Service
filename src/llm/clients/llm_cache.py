@@ -83,8 +83,13 @@ class LLMCache:
         text = str(raw)
         try:
             decoded = json.loads(text)
-            if isinstance(decoded, dict) and decoded.get("version") == 2 and isinstance(decoded.get("text"), str):
-                return decoded["text"], decoded.get("usage") if isinstance(decoded.get("usage"), dict) else None
+            if (
+                isinstance(decoded, dict)
+                and decoded.get("version") == 2
+                and isinstance(decoded.get("text"), str)
+            ):
+                usage = decoded.get("usage")
+                return decoded["text"], usage if isinstance(usage, dict) else None
         except (TypeError, ValueError):
             pass
         return text, None
@@ -95,10 +100,18 @@ class LLMCache:
         except Exception as exc:
             logger.warning("llm_cache_set_failed", error=str(exc))
 
-    async def set_entry(self, key: str, value: str, usage: dict[str, int], ttl_sec: int | None = None) -> None:
+    async def set_entry(
+        self,
+        key: str,
+        value: str,
+        usage: dict[str, int],
+        ttl_sec: int | None = None,
+    ) -> None:
         """Store a versioned entry with the provider response's measured units."""
         try:
-            payload = json.dumps({"version": 2, "text": value, "usage": usage}, separators=(",", ":"))
+            payload = json.dumps(
+                {"version": 2, "text": value, "usage": usage}, separators=(",", ":")
+            )
             await self._redis.set(key, payload, ex=ttl_sec or self._default_ttl)
         except Exception as exc:
             logger.warning("llm_cache_set_failed", error=str(exc))

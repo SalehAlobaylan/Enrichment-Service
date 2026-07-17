@@ -9,7 +9,7 @@ practical on a SMALL candidate set (typically top-K after retrieval).
 
 Standard IR pattern:
   cheap retrieval (kNN) → top-50 candidates
-  RRF fusion             → top-30 candidates
+  Dense kNN               → top-30 candidates
   expensive rerank       → top-10 candidates (final order)
 
 bge-reranker-v2-m3 is the BAAI reranker paired with BGE-M3 (same training

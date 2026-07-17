@@ -10,7 +10,7 @@ cross-encoder locally (which would OOM alongside BGE-M3).
 
 `rerank()` is intentionally SYNC (blocking httpx) because the caller invokes it
 via `asyncio.to_thread(...)`, exactly like the local wrapper — so this is a
-true drop-in. Failures raise; the caller degrades to RRF order.
+true drop-in. Failures raise; the caller degrades to dense-kNN order.
 
 REMOVE WHEN: a single instance can hold both models (~8GB). Clear
 RERANKER_BASE_URL → ModelManager uses the in-process RerankerWrapper again and
@@ -30,7 +30,7 @@ class RerankerClient:
         token: str = "",
         model_name: str = "BAAI/bge-reranker-v2-m3",
         # 30s was too tight for the constrained reranker instance (it timed out
-        # before the cross-encoder finished, silently degrading to RRF). 50s
+        # before the cross-encoder finished, silently degrading to dense kNN). 50s
         # gives headroom while staying under the ~60s gateway/ingress cap. With
         # RERANK_INPUT_K lowered to ~8, a batch now finishes in ~15s anyway.
         timeout_sec: float = 50.0,
@@ -39,6 +39,9 @@ class RerankerClient:
         self._token = token
         self._model_name = model_name
         self._timeout = timeout_sec
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(timeout_sec, connect=min(5.0, timeout_sec)),
+        )
 
     @property
     def model_name(self) -> str:
@@ -48,13 +51,17 @@ class RerankerClient:
     def is_loaded(self) -> bool:
         # "Loaded" == configured. We don't ping on every check; a transient
         # remote failure surfaces as a rerank exception, which RelatedService
-        # already catches and degrades to RRF order.
+        # already catches and degrades to dense-kNN order.
         return bool(self._base_url)
 
     def load(self) -> None:
         # Remote model — nothing to load locally. Kept for wrapper parity so
         # ModelManager.warmup() can call it uniformly.
         logger.info("reranker_remote_configured", base_url=self._base_url)
+
+    def close(self) -> None:
+        """Release the pooled keep-alive transport during role shutdown."""
+        self._client.close()
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Score candidates against the query via the remote reranker.
@@ -68,11 +75,10 @@ class RerankerClient:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
 
-        resp = httpx.post(
+        resp = self._client.post(
             f"{self._base_url}/v1/rerank",
             json={"query": query, "candidates": candidates},
             headers=headers,
-            timeout=self._timeout,
         )
         resp.raise_for_status()
         return [float(s) for s in resp.json().get("scores", [])]

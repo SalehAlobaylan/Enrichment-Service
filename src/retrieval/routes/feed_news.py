@@ -1,8 +1,8 @@
 """POST /v1/feed/news/slide — News-feed slide assembly (Slice B).
 
-One anchor article + up to k related TWEET/COMMENT items, fully ranked
-and filtered for feed display. Composed of hybrid retrieval, cross-encoder
-rerank, and editorial ranking rules (freshness, diversity, quotas).
+Internal compatibility helper for a canonical NEWS anchor plus related NEWS
+items. It uses dense retrieval, cross-encoder reranking, and format-aware
+freshness, diversity, and quota rules. CMS owns public story-slide assembly.
 """
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,7 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from src.common.auth.service_auth import verify_service_token
 from src.common.middleware.error_handler import EmbeddingError
 from src.common.utils.logging import get_logger
-from src.common.utils.metrics import feed_news_requests_total
+from src.common.utils.metrics import (
+    feed_news_compatibility_requests_total,
+    feed_news_requests_total,
+)
 from src.retrieval.schemas.feed_news import (
     FeedNewsSlideRequest,
     FeedNewsSlideResponse,
@@ -26,6 +29,10 @@ router = APIRouter(dependencies=[Depends(verify_service_token)])
 async def feed_news_slide(
     body: FeedNewsSlideRequest, request: Request
 ) -> FeedNewsSlideResponse:
+    # No in-repository production caller exists. Keep this compatibility
+    # surface observable before it is removed; it must never serve the public
+    # News feed, which CMS assembles from live story state.
+    feed_news_compatibility_requests_total.inc()
     model_manager = request.app.state.model_manager
     cms_client = request.app.state.cms_client
     settings = request.app.state.settings
@@ -38,6 +45,8 @@ async def feed_news_slide(
         cms_client,
         settings,
         reranker=model_manager.reranker,
+        admission=request.app.state.workload_admission,
+        executors=getattr(request.app.state, "workload_executors", None),
     )
     feed_service = FeedNewsService(
         related_service,

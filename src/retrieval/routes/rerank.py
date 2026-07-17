@@ -37,7 +37,7 @@ async def rerank(body: RerankRequest, request: Request) -> RerankResponse:
     if not reranker.is_loaded:
         # On the reranker-role instance this means the model is still warming;
         # the caller (RelatedService) treats any rerank failure as "skip rerank,
-        # keep RRF order", so a 503-ish signal here is safe.
+        # keep dense-kNN order", so a 503-ish signal here is safe.
         raise EmbeddingError("Reranker model is not loaded")
 
     if not body.candidates:
@@ -45,5 +45,10 @@ async def rerank(body: RerankRequest, request: Request) -> RerankResponse:
 
     import asyncio
 
-    scores = await asyncio.to_thread(reranker.rerank, body.query, body.candidates)
+    async with request.app.state.workload_admission.acquire("rerank"):
+        executors = getattr(request.app.state, "workload_executors", None)
+        if executors is not None:
+            scores = await executors.run("rerank", reranker.rerank, body.query, body.candidates)
+        else:
+            scores = await asyncio.to_thread(reranker.rerank, body.query, body.candidates)
     return RerankResponse(scores=[float(s) for s in scores], model=reranker.model_name)

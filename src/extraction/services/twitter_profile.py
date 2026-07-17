@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from curl_cffi import requests as cffi
 
 from src.common.utils.logging import get_logger
+from src.common.workload_admission import WorkloadExecutors
 from src.extraction.schemas.extract import (
     TwitterPost,
     TwitterProfileResponse,
@@ -253,15 +254,24 @@ def _rest_recommendations(seed_param: dict, limit: int, *, retry: bool = True) -
 class TwitterProfileService:
     """Fetch + parse one X profile timeline via guest-token GraphQL."""
 
-    def __init__(self, timeout_sec: int = 30):
+    def __init__(
+        self, timeout_sec: int = 30, executors: WorkloadExecutors | None = None
+    ) -> None:
         self.timeout_sec = timeout_sec
+        self.executors = executors
 
     async def fetch(self, username: str) -> TwitterProfileResponse:
+        if self.executors is not None:
+            return await self.executors.run("extraction", self._do_fetch, username)
         return await asyncio.to_thread(self._do_fetch, username)
 
     async def fetch_recommendations(
         self, seed: str, limit: int = 40
     ) -> TwitterRecommendationsResponse:
+        if self.executors is not None:
+            return await self.executors.run(
+                "extraction", self._do_recommendations, seed, limit
+            )
         return await asyncio.to_thread(self._do_recommendations, seed, limit)
 
     def _do_recommendations(

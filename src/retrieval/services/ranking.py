@@ -20,8 +20,8 @@ from src.retrieval.schemas.related import RelatedItem
 
 logger = get_logger(__name__)
 
-# Content-type → settings attribute. Centralized here so all rules use the
-# same mapping and adding a content type is one place.
+# NEWS formats (and non-NEWS kinds for generic retrieval) map to settings
+# attributes. Centralizing the mapping keeps freshness semantics consistent.
 _DECAY_ATTR_BY_TYPE: dict[str, str] = {
     "TWEET":   "FRESHNESS_DECAY_TWEET_DAYS",
     "COMMENT": "FRESHNESS_DECAY_COMMENT_DAYS",
@@ -36,7 +36,7 @@ def apply_freshness_decay(
 ) -> list[RelatedItem]:
     """Multiply each item's score by exp(-age_days / τ).
 
-    τ varies by content type (configured in Settings) — tweets decay in
+    τ varies by NEWS format or content kind (configured in Settings) — tweets decay in
     days, podcasts in months. Items missing `published_at` skip the decay
     (don't penalize unknown-age items; rely on relevance alone for them).
 
@@ -46,7 +46,12 @@ def apply_freshness_decay(
     decayed: list[RelatedItem] = []
     skipped = 0
     for item in items:
-        tau_attr = _DECAY_ATTR_BY_TYPE.get(item.content_type or "")
+        kind_or_format = (
+            item.content_format
+            if item.content_type == "NEWS" and item.content_format
+            else item.content_type
+        )
+        tau_attr = _DECAY_ATTR_BY_TYPE.get(kind_or_format or "")
         if not tau_attr or not item.published_at:
             # No decay configured for this type, or no published_at — keep
             # original score. (Article-only feeds in early-stage CMS may
@@ -112,42 +117,39 @@ def apply_source_diversity(
     return kept
 
 
-def apply_type_quotas(
-    items: list[RelatedItem], required_types: list[str] | None
+def apply_format_quotas(
+    items: list[RelatedItem], required_formats: list[str] | None
 ) -> list[RelatedItem]:
-    """Filter to required types and interleave to surface a mix.
+    """Filter to required NEWS formats and interleave to surface a mix.
 
-    Items whose content_type is not in `required_types` are DROPPED — they
-    must not leak into the final slide (e.g. an ARTICLE appearing in a
-    TWEET/COMMENT-only slide would violate the News-feed contract).
+    Items whose content_format is not in `required_formats` are DROPPED.
 
-    Reorders to interleave types when possible (best-rank item per required
-    type first, then second-best, ...).
+    Reorders to interleave formats when possible (best-rank item per required
+    format first, then second-best, ...).
 
-    `required_types=None` or empty is a no-op (caller didn't ask for a mix).
+    `required_formats=None` or empty is a no-op (caller didn't ask for a mix).
     """
-    if not required_types:
+    if not required_formats:
         return items
 
-    by_type: dict[str, list[RelatedItem]] = defaultdict(list)
+    by_format: dict[str, list[RelatedItem]] = defaultdict(list)
     dropped = 0
     for item in items:
-        t = item.content_type
-        if t and t in required_types:
-            by_type[t].append(item)
+        content_format = item.content_format
+        if item.content_type == "NEWS" and content_format in required_formats:
+            by_format[content_format].append(item)
         else:
             dropped += 1
 
     if dropped:
-        ranking_rules_dropped_total.labels(rule="type_quotas").inc(dropped)
+        ranking_rules_dropped_total.labels(rule="format_quotas").inc(dropped)
 
-    # Round-robin interleave across required types (in the order the caller
-    # listed them — TWEET, COMMENT vs COMMENT, TWEET may matter for UI).
+    # Round-robin interleave across required formats in caller order.
     interleaved: list[RelatedItem] = []
-    while any(by_type[t] for t in required_types):
-        for t in required_types:
-            if by_type[t]:
-                interleaved.append(by_type[t].pop(0))
+    while any(by_format[format_] for format_ in required_formats):
+        for format_ in required_formats:
+            if by_format[format_]:
+                interleaved.append(by_format[format_].pop(0))
 
     return interleaved
 

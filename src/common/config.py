@@ -13,7 +13,16 @@ class Settings(BaseSettings):
     # Auth
     SERVICE_AUTH_TOKEN: str = ""
     ENRICHMENT_SERVICE_TOKEN: str = ""
+    # Dedicated control-plane capability for the human-authorized restart
+    # endpoint. It must never authorize normal service traffic.
+    ENRICHMENT_RESTART_TOKEN: str = ""
+    # Dedicated outbound CMS identity. CMS_SERVICE_TOKEN remains a local and
+    # time-bounded rollout fallback; it must not be used in production.
+    CMS_ENRICHMENT_SERVICE_TOKEN: str = ""
     CMS_SERVICE_TOKEN: str = ""
+    # Dedicated credential for API → reranker deployment. It must not inherit
+    # CMS or inbound API authority in production.
+    RERANKER_SERVICE_TOKEN: str = ""
     CMS_BASE_URL: str = "http://localhost:8080"
 
     # Models — text embedder only. Whisper + CLIP moved to Media-Service.
@@ -79,10 +88,8 @@ class Settings(BaseSettings):
     # Env overrides still resolve here as an emergency escape hatch, but
     # ops shouldn't reach for them as a normal lever.
     #
-    # Slice A — hybrid retrieval (/v1/related):
-    #   RRF_K                       — Reciprocal Rank Fusion constant (standard 60)
-    #   RELATED_K_DENSE_DEFAULT     — dense kNN pool size before fusion
-    #   RELATED_K_SPARSE_DEFAULT    — sparse kNN pool size before fusion
+    # Slice A — dense retrieval (/v1/related):
+    #   RELATED_K_DENSE_DEFAULT     — dense kNN candidate pool size
     # Slice B — reranker + News-feed slide assembly:
     #   RERANK_ENABLED              — kept env-documented (feature toggle, not a number)
     #   RERANKER_MODEL              — kept env-documented (model selector, boot-time)
@@ -112,13 +119,11 @@ class Settings(BaseSettings):
     ENRICHMENT_ROLE: str = "api"  # "api" | "reranker"
     RERANKER_BASE_URL: str = ""  # e.g. https://enrichment-reranker-xxxx.cranl.net
 
-    RRF_K: int = 60
     RELATED_K_DENSE_DEFAULT: int = 50
-    RELATED_K_SPARSE_DEFAULT: int = 50
     # Candidates rescored by the cross-encoder per request. Lowered 30 → 8
     # because the split reranker runs on a RAM/CPU-constrained Cranl instance
     # (~2s/pair): 30 pairs took >59s and hit the ingress 504 + the client
-    # timeout, so rerank silently fell back to RRF. 8 pairs (~15s) finishes
+    # timeout, so rerank silently fell back to dense kNN. 8 pairs (~15s) finishes
     # well under both. Raise back toward 30 once the reranker has real CPU.
     RERANK_INPUT_K: int = 8
 
@@ -151,11 +156,17 @@ class Settings(BaseSettings):
 
     @property
     def service_auth_token(self) -> str:
+        if self.is_production:
+            return self.SERVICE_AUTH_TOKEN
         return (
             self.SERVICE_AUTH_TOKEN
             or self.ENRICHMENT_SERVICE_TOKEN
             or self.CMS_SERVICE_TOKEN
         )
+
+    @property
+    def cms_writeback_token(self) -> str:
+        return self.CMS_ENRICHMENT_SERVICE_TOKEN or self.CMS_SERVICE_TOKEN
 
     @property
     def fallback_providers(self) -> list[str]:
@@ -169,14 +180,9 @@ class Settings(BaseSettings):
     def model_for(self, provider: str) -> str:
         """Resolve which model name to use for a given provider.
 
-        Per-provider override env vars (LLM_OPENAI_MODEL etc.) win when set;
-        otherwise fall back to LLM_MODEL (which is the model name the operator
-        configured for the primary provider).
-
-        DeepSeek has its own override default (`deepseek-chat`) because the
-        primary LLM_MODEL is typically a Gemini model name that DeepSeek
-        wouldn't accept — so LLM_DEEPSEEK_MODEL has a real default, unlike
-        the other providers whose override is empty by convention.
+        The global LLM_MODEL belongs only to the configured primary provider.
+        Every fallback resolves its own explicit override or a code default so
+        a Gemini/OpenAI model identifier can never leak across providers.
         """
         override_map = {
             "openai": self.LLM_OPENAI_MODEL,
@@ -185,7 +191,16 @@ class Settings(BaseSettings):
             "deepseek": self.LLM_DEEPSEEK_MODEL,
         }
         override = (override_map.get(provider) or "").strip()
-        return override or self.LLM_MODEL
+        if override:
+            return override
+        if provider == (self.LLM_PROVIDER or "").strip().lower():
+            return self.LLM_MODEL.strip()
+        return {
+            "openai": "gpt-4o-mini",
+            "anthropic": "claude-haiku-4-5-20251001",
+            "gemini": "gemini-3.5-flash",
+            "deepseek": "deepseek-chat",
+        }.get(provider, "")
 
     def validate_startup(self) -> tuple[list[str], list[str]]:
         """Return (fatal_errors, warnings).
@@ -199,7 +214,15 @@ class Settings(BaseSettings):
         """
         errors: list[str] = []
         warnings: list[str] = []
-        provider = (self.LLM_PROVIDER or "").strip().lower()
+        role = (self.ENRICHMENT_ROLE or "api").strip().lower()
+        provider = (
+            (self.LLM_PROVIDER or "").strip().lower()
+            if role != "reranker"
+            else "none"
+        )
+
+        if role not in {"api", "reranker"}:
+            errors.append("ENRICHMENT_ROLE must be one of: api, reranker")
 
         def _missing_key(msg: str) -> None:
             (errors if self.is_production else warnings).append(msg)
@@ -241,7 +264,12 @@ class Settings(BaseSettings):
             "gemini": self.GEMINI_API_KEY,
             "deepseek": self.DEEPSEEK_API_KEY,
         }
-        for fp in self.fallback_providers:
+        seen_fallbacks: set[str] = set()
+        for fp in self.fallback_providers if role != "reranker" else []:
+            if fp in seen_fallbacks:
+                errors.append(f"LLM_FALLBACK_PROVIDERS contains duplicate provider {fp!r}")
+                continue
+            seen_fallbacks.add(fp)
             if fp == provider:
                 errors.append(
                     f"LLM_FALLBACK_PROVIDERS contains {fp!r}, which is also the primary "
@@ -258,11 +286,28 @@ class Settings(BaseSettings):
                 _missing_key(
                     f"LLM_FALLBACK_PROVIDERS includes {fp!r} but its API key is empty"
                 )
+            if not self.model_for(fp):
+                errors.append(f"LLM fallback provider {fp!r} has no resolved model")
 
-        if self.is_production and not self.service_auth_token:
+        if self.is_production and not self.SERVICE_AUTH_TOKEN.strip():
             errors.append(
-                "SERVICE_AUTH_TOKEN (or ENRICHMENT_SERVICE_TOKEN / "
-                "CMS_SERVICE_TOKEN) must be set in production"
+                "SERVICE_AUTH_TOKEN must be set in production for inbound requests"
             )
+
+        if self.is_production and role == "api" and not self.CMS_ENRICHMENT_SERVICE_TOKEN.strip():
+            errors.append("CMS_ENRICHMENT_SERVICE_TOKEN must be set for production API write-back")
+
+        if (
+            self.is_production
+            and role == "api"
+            and self.RERANKER_BASE_URL.strip()
+            and not self.RERANKER_SERVICE_TOKEN.strip()
+        ):
+            errors.append(
+                "RERANKER_SERVICE_TOKEN must be set for a production remote reranker"
+            )
+
+        if self.is_production and not self.ENRICHMENT_RESTART_TOKEN:
+            errors.append("ENRICHMENT_RESTART_TOKEN must be set in production")
 
         return errors, warnings

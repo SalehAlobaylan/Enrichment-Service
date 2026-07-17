@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from hashlib import sha256
 from urllib.parse import urlparse
 
 _ALLOWED_SCHEMES = {"http", "https"}
@@ -19,6 +20,15 @@ _ALLOWED_SCHEMES = {"http", "https"}
 
 class UnsafeURLError(ValueError):
     """Raised when a URL is not safe to fetch server-side."""
+
+
+def safe_url_label(url: str) -> str:
+    """Return a diagnostic label without query, fragment, or userinfo."""
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower() or "unknown"
+    host = parsed.hostname or "invalid-host"
+    fingerprint = sha256((parsed.path or "/").encode()).hexdigest()[:12]
+    return f"{scheme}://{host}/#{fingerprint}"
 
 
 def _is_public_ip(ip: str) -> bool:
@@ -52,6 +62,8 @@ def validate_public_url(url: str) -> str:
     host = parsed.hostname
     if not host:
         raise UnsafeURLError("URL has no host")
+    if parsed.username is not None or parsed.password is not None:
+        raise UnsafeURLError("URL must not include userinfo")
 
     # Resolve every A/AAAA record and reject if ANY is non-public — defends
     # against a hostname that resolves to a mix of public + internal addresses.

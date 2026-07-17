@@ -1,10 +1,12 @@
+import asyncio
 import json
+
+from pydantic import ValidationError
 
 from src.common.utils.logging import get_logger
 from src.llm.clients.llm import LLMClient
 from src.llm.schemas.chapter_proposal import (
     ChapterProposal,
-    ChapterProposalChecks,
     ChapterProposalItem,
     ChapterProposalResponse,
 )
@@ -50,6 +52,11 @@ Return ONLY a JSON object:
 
 MAX_TRANSCRIPT_CHARS = 6000
 MAX_RATIONALE_CHARS = 300
+MAX_PROPOSAL_BATCH_SIZE = 15
+PROPOSAL_CONCURRENCY = 3
+# Five waves of three bounded calls fit below CMS's 75-second outer timeout,
+# leaving response serialization headroom. This is deliberately a code default.
+PROPOSAL_PER_CASE_TIMEOUT_SECONDS = 12
 
 
 class ChapterProposalService:
@@ -59,11 +66,39 @@ class ChapterProposalService:
     async def propose_batch(
         self, items: list[ChapterProposalItem]
     ) -> ChapterProposalResponse:
-        proposals: list[ChapterProposal] = []
-        for item in items:
-            proposal = await self._propose_one(item)
-            if proposal is not None:
-                proposals.append(proposal)
+        items = items[:MAX_PROPOSAL_BATCH_SIZE]
+        semaphore = asyncio.Semaphore(PROPOSAL_CONCURRENCY)
+
+        async def propose_one_bounded(
+            item: ChapterProposalItem,
+        ) -> tuple[ChapterProposal | None, bool]:
+            try:
+                async with semaphore:
+                    proposal = await asyncio.wait_for(
+                        self._propose_one(item), timeout=PROPOSAL_PER_CASE_TIMEOUT_SECONDS
+                    )
+                return proposal, False
+            except asyncio.TimeoutError:
+                logger.warning("chapter_proposal_timed_out", id=item.id)
+                return None, True
+            except Exception as exc:
+                # One malformed provider response must not discard valid cases
+                # from the same bounded batch. Never log model output here.
+                logger.warning(
+                    "chapter_proposal_item_failed", id=item.id, category=type(exc).__name__
+                )
+                return None, False
+
+        results = await asyncio.gather(*(propose_one_bounded(item) for item in items))
+        proposals = [proposal for proposal, _ in results if proposal is not None]
+        timed_out = sum(1 for _, timed_out in results if timed_out)
+        logger.info(
+            "chapter_proposal_batch_complete",
+            attempted=len(items),
+            succeeded=len(proposals),
+            invalid_or_failed=len(items) - len(proposals) - timed_out,
+            timed_out=timed_out,
+        )
         return ChapterProposalResponse(proposals=proposals)
 
     async def _propose_one(self, item: ChapterProposalItem) -> ChapterProposal | None:
@@ -93,34 +128,34 @@ class ChapterProposalService:
 
     @staticmethod
     def _parse(case_id: str, raw: str) -> ChapterProposal | None:
+        if not isinstance(raw, str):
+            logger.warning("chapter_proposal_invalid_output", id=case_id, category="non_string")
+            return None
         try:
             parsed = json.loads(_strip_fences(raw))
         except Exception:
             logger.warning("chapter_proposal_unparseable", id=case_id)
             return None
 
-        decision = str(parsed.get("proposal", "")).strip().lower()
-        if decision not in ("publish", "reject"):
+        if not isinstance(parsed, dict):
+            logger.warning("chapter_proposal_invalid_output", id=case_id, category="non_object")
             return None
         try:
-            confidence = float(parsed.get("confidence", 0.0))
-        except (TypeError, ValueError):
+            # The provider is not allowed to set an id: CMS owns the case
+            # correlation. Strict models reject extra and missing structure.
+            if "id" in parsed:
+                logger.warning(
+                    "chapter_proposal_invalid_output",
+                    id=case_id,
+                    category="unexpected_id",
+                )
+                return None
+            return ChapterProposal.model_validate({"id": case_id, **parsed})
+        except ValidationError as exc:
+            category = exc.errors()[0].get("type", "validation") if exc.errors() else "validation"
+            logger.warning(
+                "chapter_proposal_invalid_output",
+                id=case_id,
+                category=category,
+            )
             return None
-        confidence = max(0.0, min(1.0, confidence))
-        rationale = str(parsed.get("rationale", "")).strip().replace("\n", " ")[
-            :MAX_RATIONALE_CHARS
-        ]
-        checks_raw = parsed.get("checked") or {}
-        checked = ChapterProposalChecks(
-            duration_ok=bool(checks_raw.get("duration_ok", False)),
-            no_sponsor_overlap=bool(checks_raw.get("no_sponsor_overlap", False)),
-            coherent_start=bool(checks_raw.get("coherent_start", False)),
-            coherent_end=bool(checks_raw.get("coherent_end", False)),
-        )
-        return ChapterProposal(
-            id=case_id,
-            proposal=decision,
-            confidence=confidence,
-            rationale=rationale,
-            checked=checked,
-        )

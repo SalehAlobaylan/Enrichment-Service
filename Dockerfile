@@ -1,79 +1,61 @@
-# ─── Stage 1: Download ML models ──────────────────────────────
-#
-# Pre-caches Qwen3-Embedding-0.6B (text embedder) + bge-reranker-v2-m3 into /models so
-# the runtime stage doesn't re-download ~6 GB on every container start.
-# Uses PyTorch's CPU-only index — without that pin the model-downloader
-# also pulls ~3 GB of nvidia-* CUDA libraries just to cache models on
-# disk. FlagEmbedding is needed because download_models.py uses
-# FlagReranker for the reranker download.
-FROM python:3.11-slim AS model-downloader
+# `pyproject.toml` + `uv.lock` are the only dependency authority. Every stage
+# installs the same frozen CPU-Torch graph; model stages differ only in the
+# artifact they cache.
+FROM ghcr.io/astral-sh/uv:0.9.28 AS uv
 
-# gcc + python headers are needed because FlagEmbedding pulls `zlib-state`
-# (via the peft → accelerate → transformers chain) which has no pre-built
-# wheel and compiles from source. This stage is discarded after `/models`
-# is copied to the runtime stage, so the build-tools bloat doesn't ship.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.11-slim AS runtime-deps
+COPY --from=uv /uv /uvx /bin/
 
-RUN pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
-    torch \
-    sentence-transformers \
-    FlagEmbedding
-
-COPY scripts/download_models.py /tmp/download_models.py
-RUN python /tmp/download_models.py --output /models
-
-
-# ─── Stage 2: Runtime ─────────────────────────────────────────
-#
-# Slim Debian + Python 3.11. System deps narrowed to what production
-# actually uses: ffmpeg (HTML media references), libgomp1 (BLAS), curl
-# + ca-certificates (healthcheck + outbound HTTPS).
-#
-# Chromium runtime deps (libnss3, libnspr4, libatk*, libcups2, libdrm2,
-# libxkbcommon0, libxcomposite1, libxdamage1, libxrandr2, libgbm1,
-# libpango-1.0-0, libcairo2, libasound2, libxshmfence1) were removed in
-# Phase 8 because Playwright moved to requirements-dev.txt. The /v1/extract
-# route falls back to Scrapling's plain-HTTP path in production.
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libgomp1 \
-    curl \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_COMPILE_BYTECODE=1 \
+    PATH=/opt/venv/bin:$PATH
 
 WORKDIR /app
+COPY pyproject.toml uv.lock ./
 
-COPY --from=model-downloader /models /app/models
-
-COPY requirements.txt .
-# Install build tools, install Python deps (FlagEmbedding's transitive
-# zlib-state needs gcc), then remove the build tools in the same layer so
-# they don't ship in the final image. Saves ~250 MB vs leaving gcc
-# installed.
+# FlagEmbedding may build zlib-state on platforms without a wheel. Keep the
+# toolchain only for this layer, then purge it before any runtime target.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         python3-dev \
-    && pip install --no-cache-dir -r requirements.txt \
+        libgomp1 \
+        ca-certificates \
+    && uv sync --frozen --no-dev --no-install-project \
     && apt-get purge -y gcc python3-dev \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY src/ src/
-COPY scripts/ scripts/
+FROM runtime-deps AS model-api
+COPY scripts/download_models.py /tmp/download_models.py
+RUN python /tmp/download_models.py --output /models --role api
 
+FROM runtime-deps AS model-reranker
+COPY scripts/download_models.py /tmp/download_models.py
+RUN python /tmp/download_models.py --output /models --role reranker
+
+FROM runtime-deps AS runtime-base
+WORKDIR /app
+RUN groupadd --system enrichment \
+    && useradd --system --gid enrichment --home /app enrichment \
+    && mkdir /app/models \
+    && chown -R enrichment:enrichment /app /opt/venv
+
+COPY --chown=enrichment:enrichment src/ src/
+COPY --chown=enrichment:enrichment scripts/ scripts/
+
+USER enrichment
 ENV MODELS_DIR=/app/models \
     PORT=5050
-
 EXPOSE 5050
-
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD sh scripts/healthcheck.sh
 
-# JSON array form — avoids signal-handling surprises with `sh -c` strings.
+FROM runtime-base AS api
+COPY --chown=enrichment:enrichment --from=model-api /models /app/models
+ENV ENRICHMENT_ROLE=api
+CMD ["sh", "-c", "python -m uvicorn src.main:app --host 0.0.0.0 --port ${PORT}"]
+
+FROM runtime-base AS reranker
+COPY --chown=enrichment:enrichment --from=model-reranker /models /app/models
+ENV ENRICHMENT_ROLE=reranker
 CMD ["sh", "-c", "python -m uvicorn src.main:app --host 0.0.0.0 --port ${PORT}"]

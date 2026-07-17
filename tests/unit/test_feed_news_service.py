@@ -36,7 +36,8 @@ def mock_cms() -> AsyncMock:
     cms = AsyncMock()
     cms.get_content_item_basic.return_value = {
         "id": "anchor-1",
-        "type": "ARTICLE",
+        "type": "NEWS",
+        "format": "ARTICLE",
         "title": "Anchor article",
         "excerpt": "anchor excerpt",
         "source_name": "anchor-source",
@@ -59,8 +60,9 @@ async def test_slide_returns_anchor_plus_related(
             RelatedItem(
                 content_id=f"r{i}",
                 score=1.0 - i * 0.1,
-                content_type="TWEET",
-                sources=["dense", "sparse"],
+                content_type="NEWS",
+                content_format="TWEET",
+                sources=["dense"],
                 source_name=f"src-{i}",
             )
             for i in range(5)
@@ -72,7 +74,7 @@ async def test_slide_returns_anchor_plus_related(
     )
 
     assert resp.anchor.content_id == "anchor-1"
-    assert resp.anchor.type == "ARTICLE"
+    assert resp.anchor.type == "NEWS"
     assert len(resp.related) == 3  # k truncation
 
 
@@ -107,15 +109,15 @@ async def test_slide_applies_source_diversity_before_truncate(
     mock_related.related.return_value = RelatedResponse(
         results=[
             RelatedItem(
-                content_id="a", score=0.9, content_type="TWEET",
+                content_id="a", score=0.9, content_type="NEWS", content_format="TWEET",
                 sources=["dense"], source_name="src-x",
             ),
             RelatedItem(
-                content_id="b", score=0.8, content_type="TWEET",
+                content_id="b", score=0.8, content_type="NEWS", content_format="TWEET",
                 sources=["dense"], source_name="src-x",
             ),
             RelatedItem(
-                content_id="c", score=0.7, content_type="TWEET",
+                content_id="c", score=0.7, content_type="NEWS", content_format="TWEET",
                 sources=["dense"], source_name="src-x",  # over cap
             ),
         ]
@@ -128,29 +130,29 @@ async def test_slide_applies_source_diversity_before_truncate(
 
 
 @pytest.mark.asyncio
-async def test_slide_default_types_include_article_tweet_comment(
+async def test_slide_defaults_to_news_kind_and_supported_formats(
     service: FeedNewsService, mock_related: AsyncMock
 ) -> None:
     mock_related.related.return_value = RelatedResponse(results=[])
     await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
     related_request = mock_related.related.call_args.args[0]
-    # ARTICLE included so related surfaces topically-similar news even with no
-    # tweets/comments; the anchor is excluded via exclude_ids.
-    assert related_request.types == ["ARTICLE", "TWEET", "COMMENT"]
+    assert related_request.types == ["NEWS"]
+    assert related_request.formats == ["ARTICLE", "TWEET", "COMMENT"]
 
 
 @pytest.mark.asyncio
-async def test_slide_caller_types_override_default(
+async def test_slide_caller_formats_override_default(
     service: FeedNewsService, mock_related: AsyncMock
 ) -> None:
     mock_related.related.return_value = RelatedResponse(results=[])
     await service.slide(
         FeedNewsSlideRequest(
-            anchor_content_id="anchor-1", k=3, types=["COMMENT"]
+            anchor_content_id="anchor-1", k=3, formats=["COMMENT"]
         )
     )
     related_request = mock_related.related.call_args.args[0]
-    assert related_request.types == ["COMMENT"]
+    assert related_request.types == ["NEWS"]
+    assert related_request.formats == ["COMMENT"]
 
 
 @pytest.mark.asyncio
@@ -198,7 +200,8 @@ async def test_slide_cache_hit_skips_pipeline(
             RelatedItem(
                 content_id="cached-r",
                 score=0.5,
-                content_type="TWEET",
+                content_type="NEWS",
+                content_format="TWEET",
                 sources=["dense"],
             )
         ],
@@ -227,7 +230,8 @@ async def test_slide_cache_miss_runs_pipeline_and_stores(
             RelatedItem(
                 content_id="r0",
                 score=0.9,
-                content_type="TWEET",
+                content_type="NEWS",
+                content_format="TWEET",
                 sources=["dense"],
                 source_name="s0",
             )

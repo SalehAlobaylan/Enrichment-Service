@@ -1,5 +1,11 @@
 """Schemas for POST /v1/related."""
-from pydantic import BaseModel, Field, model_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+MAX_RELATED_TEXT_CHARS = 12_000
+MAX_RELATED_EXCLUSIONS = 200
+MAX_CONTENT_ID_CHARS = 128
 
 
 class RelatedRequest(BaseModel):
@@ -8,18 +14,21 @@ class RelatedRequest(BaseModel):
     slide assembly anchors on a content_item that already has a dense vector.
     """
 
-    content_id: str | None = None
-    text: str | None = None
-    # Optional content-type filter, e.g. ["TWEET", "COMMENT"] to find related
-    # social commentary for a News-feed ARTICLE anchor.
-    types: list[str] | None = None
+    content_id: str | None = Field(default=None, min_length=1, max_length=MAX_CONTENT_ID_CHARS)
+    text: str | None = Field(default=None, min_length=1, max_length=MAX_RELATED_TEXT_CHARS)
+    # Canonical content-kind filter. NEWS format is selected separately.
+    types: list[Literal["NEWS", "VIDEO", "PODCAST"]] | None = Field(
+        default=None, max_length=3
+    )
+    formats: list[Literal["ARTICLE", "TWEET", "COMMENT"]] | None = Field(
+        default=None, max_length=3
+    )
     # Final number of items to return after retrieval and optional rerank.
-    # Candidate pools are sized via RELATED_K_*_DEFAULT in config; sparse
-    # settings are legacy compatibility while the old CMS column still exists.
+    # Candidate pool is sized via RELATED_K_DENSE_DEFAULT in config.
     k: int = Field(10, ge=1, le=100)
     # Caller-supplied id blocklist — typically the anchor itself + items the
     # client has already shown the user this session.
-    exclude_ids: list[str] | None = None
+    exclude_ids: list[str] | None = Field(default=None, max_length=MAX_RELATED_EXCLUSIONS)
     # When True (default), run the cross-encoder reranker on the top
     # RERANK_INPUT_K candidates and reorder by rerank score. Set
     # False for debugging or to bypass the reranker (e.g., when the model
@@ -34,21 +43,33 @@ class RelatedRequest(BaseModel):
             raise ValueError("Provide content_id OR text, not both")
         return self
 
+    @field_validator("exclude_ids")
+    @classmethod
+    def _validate_exclude_ids(cls, ids: list[str] | None) -> list[str] | None:
+        if ids is None:
+            return None
+        if any(not item.strip() or len(item) > MAX_CONTENT_ID_CHARS for item in ids):
+            raise ValueError("exclude_ids must be non-empty IDs at most 128 characters")
+        if len(set(ids)) != len(ids):
+            raise ValueError("exclude_ids must be unique")
+        return ids
+
 
 class RelatedItem(BaseModel):
-    """One retrieved result. `sources` indicates which retrieval mode(s)
-    surfaced this item — useful for debugging retrieval behavior + dashboards.
+    """One retrieved result. Qwen retrieval is dense-only, so `sources` is
+    always `["dense"]`; it remains explicit for response provenance.
 
     After Slice B's rerank stage runs, `score` is the rerank score (sigmoid
-    in [0, 1]) and `rerank_score` mirrors it for clarity; the original RRF
-    score is overwritten. When rerank is skipped, `score` is the raw RRF
-    retrieval score and `rerank_score` is None.
+    in [0, 1]) and `rerank_score` mirrors it for clarity; the original dense
+    kNN score is overwritten. When rerank is skipped, `score` is the CMS
+    dense retrieval score and `rerank_score` is None.
     """
 
     content_id: str
     score: float
     content_type: str | None = None
-    sources: list[str]  # subset of ["dense", "sparse"]
+    content_format: str | None = None
+    sources: list[str]  # currently always ["dense"]
     # Populated only when the reranker stage ran. None means: rerank was
     # disabled, or the candidate was filtered out before reaching the reranker.
     rerank_score: float | None = None

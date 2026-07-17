@@ -1,17 +1,32 @@
 services:
-  enrichment:
-    build: .
+  enrichment-api:
+    build:
+      context: .
+      target: api
     ports:
       - "${PORT:-5050}:${PORT:-5050}"
     env_file:
       - .env
     environment:
-      - ENV=development
+      ENV: development
+      ENRICHMENT_ROLE: api
+      RERANKER_BASE_URL: http://enrichment-reranker:5050
     volumes:
       - ./src:/app/src
+    depends_on:
+      enrichment-reranker:
+        condition: service_healthy
     restart: unless-stopped
-    mem_limit: 4g
-    deploy:
-      resources:
-        limits:
-          memory: 4G
+    mem_limit: 3g
+
+  enrichment-reranker:
+    build:
+      context: .
+      target: reranker
+    env_file:
+      - .env
+    environment:
+      ENV: development
+      ENRICHMENT_ROLE: reranker
+    restart: unless-stopped
+    mem_limit: 2g

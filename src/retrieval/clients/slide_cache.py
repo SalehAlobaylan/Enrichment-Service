@@ -1,13 +1,12 @@
 """News-feed slide cache.
 
-Caches assembled `/v1/feed/news/slide` responses by a content-addressable key
+Caches internal compatibility-helper `/v1/feed/news/slide` responses by a content-addressable key
 (anchor + retrieval params). Backed by Redis, short TTL.
 
-Why: the slide pipeline is the most expensive thing in the read path — hybrid
-kNN (2 CMS round-trips) + a cross-encoder rerank inference — and CMS calls it
-per featured article on every news-feed page load. Related items change slowly,
-so a short-TTL cache turns the common case into a single Redis GET and keeps the
-reranker off the synchronous hot path.
+Why: the slide pipeline is the most expensive internal ranking helper — dense
+kNN + a cross-encoder rerank inference. This helper is never the public
+News-feed serving path; CMS owns live story assembly. A short TTL turns repeated
+compatibility calls into a single Redis GET.
 
 Mirrors `src/llm/clients/llm_cache.py`: stable SHA-256 key, get/set wrapped so a
 flaky Redis only ever misses (never breaks the request), versioned prefix.
@@ -24,7 +23,7 @@ logger = get_logger(__name__)
 
 # Bump to invalidate every cached slide (e.g. after a ranking-rule or rerank
 # change that would make old slides wrong).
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 KEY_PREFIX = "enrich:slide"
 
@@ -39,6 +38,7 @@ class SlideCache:
         anchor_content_id: str,
         k: int,
         types: list[str] | None,
+        formats: list[str] | None,
         exclude_ids: list[str] | None,
         rerank: bool,
     ) -> str:
@@ -50,6 +50,7 @@ class SlideCache:
                 anchor_content_id,
                 str(k),
                 ",".join(sorted(types or [])),
+                ",".join(sorted(formats or [])),
                 ",".join(sorted(exclude_ids or [])),
                 "1" if rerank else "0",
             ]

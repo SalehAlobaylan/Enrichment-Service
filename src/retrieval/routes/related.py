@@ -1,8 +1,7 @@
 """POST /v1/related — related-content retrieval endpoint.
 
-Embeds the query (or fetches stored embeddings by content_id), fans out to
-CMS dense kNN, optionally folds in legacy sparse hits when present, reranks,
-and returns ranked items.
+Embeds the query (or fetches stored embeddings by content_id), runs CMS dense
+kNN, optionally reranks its bounded candidate pool, and returns ranked items.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -34,6 +33,8 @@ async def related(body: RelatedRequest, request: Request) -> RelatedResponse:
         cms_client,
         settings,
         reranker=model_manager.reranker,
+        admission=request.app.state.workload_admission,
+        executors=getattr(request.app.state, "workload_executors", None),
     )
 
     try:

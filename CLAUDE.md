@@ -13,7 +13,7 @@
 Python microservice for the Wahb platform. Owns text intelligence + retrieval:
 - Text embeddings (`Qwen/Qwen3-Embedding-0.6B`, 1024-dim dense-only)
 - LLM-backed text ops (translate, summarize, tag extraction)
-- Stealth web extraction (Scrapling + Playwright)
+- Bounded web extraction (curl_cffi + Scrapling; no browser runtime)
 - Reranker and retrieval orchestration (`/v1/related`, `/v1/feed/news/slide`)
 
 Whisper transcription and CLIP image embedding moved to **Media-Service**
@@ -52,12 +52,14 @@ make test
 | `make test-integration` | Integration tests only |
 | `make lint` | Ruff linter |
 | `make format` | Ruff formatter |
-| `make docker-build` | Build Docker image |
+| `make docker-build` | Build the API image |
+| `make docker-build-reranker` | Build the split reranker image |
 | `make download-models` | Pre-download ML models |
+| `make dependency-check` | Verify the checked `uv.lock` dependency graph |
 
 ## Key Patterns
 
-**content_id write-back**: Every AI endpoint accepts an optional `content_id`. If present, Enrichment writes results directly to CMS via internal API and surfaces the outcome via `write_back_status` / `write_back_error`. If absent, stateless tool mode.
+**Selective CMS write-back**: `/v1/embed` accepts bounded `content_ids`; `/v1/translate` and `/v1/summarize` accept `content_id`. Other routes are stateless tool operations.
 
 **Auth**: Bearer token (`SERVICE_AUTH_TOKEN`) on all `/v1/*` routes. Health/ready endpoints are unauthenticated. Single shared token works for both Enrichment and Media in dev.
 

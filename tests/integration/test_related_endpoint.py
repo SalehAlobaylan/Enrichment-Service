@@ -6,28 +6,38 @@ from fastapi.testclient import TestClient
 
 def test_related_text_path(client: TestClient, auth_headers: dict[str, str]) -> None:
     cms = client.app.state.cms_client  # AsyncMock from conftest  # type: ignore[union-attr]
-    cms.knn_dense = AsyncMock(return_value=[{"id": "a", "type": "TWEET"}])
-    cms.knn_sparse = AsyncMock(return_value=[{"id": "a", "type": "TWEET"}])
+    cms.knn_dense = AsyncMock(
+        return_value=[{"id": "a", "type": "NEWS", "format": "TWEET"}]
+    )
 
     resp = client.post(
         "/v1/related",
-        json={"text": "Saudi climate initiative", "types": ["TWEET"], "k": 5},
+        json={
+            "text": "Saudi climate initiative",
+            "types": ["NEWS"],
+            "formats": ["TWEET"],
+            "k": 5,
+        },
         headers=auth_headers,
     )
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert len(data["results"]) == 1
     assert data["results"][0]["content_id"] == "a"
-    assert set(data["results"][0]["sources"]) == {"dense", "sparse"}
+    assert data["results"][0]["sources"] == ["dense"]
 
 
 def test_related_content_id_path(client: TestClient, auth_headers: dict[str, str]) -> None:
     cms = client.app.state.cms_client  # type: ignore[union-attr]
     cms.get_content_embeddings = AsyncMock(
-        return_value={"embedding": [0.1] * 1024, "embedding_sparse": {"100": 0.5}}
+        return_value={
+            "embedding": [0.1] * 1024,
+            "embedding_space_id": "qwen-test-space-v1",
+        }
     )
-    cms.knn_dense = AsyncMock(return_value=[{"id": "b", "type": "COMMENT"}])
-    cms.knn_sparse = AsyncMock(return_value=[])
+    cms.knn_dense = AsyncMock(
+        return_value=[{"id": "b", "type": "NEWS", "format": "COMMENT"}]
+    )
 
     resp = client.post(
         "/v1/related",

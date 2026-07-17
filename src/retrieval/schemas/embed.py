@@ -1,6 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+MAX_EMBED_BATCH = 32
+MAX_EMBED_TEXT_CHARS = 12_000
 
 # Same shape used by other write-back responses across the platform
 # (Media-Service's TranscribeResponse / ImageEmbedResponse use the same
@@ -9,8 +12,8 @@ WriteBackStatus = Literal["not_attempted", "ok", "failed"]
 
 
 class EmbedRequest(BaseModel):
-    texts: list[str] = Field(..., min_length=1)
-    content_ids: list[str] | None = None
+    texts: list[str] = Field(..., min_length=1, max_length=MAX_EMBED_BATCH)
+    content_ids: list[str] | None = Field(default=None, max_length=MAX_EMBED_BATCH)
     # When true, Enrichment runs topic-tag + named-entity extraction on the
     # FIRST text (the assumption: callers either send one item per request,
     # or a batch that shares a topic — e.g., multiple chunks of one article).
@@ -19,6 +22,19 @@ class EmbedRequest(BaseModel):
     # Legacy compatibility flag from the BGE-M3 sparse era. Qwen is dense-only,
     # so this is currently a no-op and sparse write-back remains None.
     extract_sparse: bool = False
+
+    @model_validator(mode="after")
+    def _validate_batch(self) -> "EmbedRequest":
+        if any(not text.strip() or len(text) > MAX_EMBED_TEXT_CHARS for text in self.texts):
+            raise ValueError("texts must be non-empty and at most 12000 characters")
+        if self.content_ids is not None:
+            if len(self.content_ids) != len(self.texts):
+                raise ValueError("content_ids must match texts length")
+            if len(set(self.content_ids)) != len(self.content_ids) or any(
+                not content_id.strip() for content_id in self.content_ids
+            ):
+                raise ValueError("content_ids must be non-empty and unique")
+        return self
 
 
 class EmbedResponse(BaseModel):
@@ -43,7 +59,7 @@ class EmbedResponse(BaseModel):
 
 
 class EmbedQueryRequest(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1, max_length=MAX_EMBED_TEXT_CHARS)
 
 
 class EmbedQueryResponse(BaseModel):

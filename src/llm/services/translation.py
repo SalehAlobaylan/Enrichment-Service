@@ -87,14 +87,15 @@ class TranslationService:
     async def _write_back(self, content_id: str, result: TranslateResponse) -> None:
         try:
             key = f"translation_{result.target_language}"
-            await self.cms_client.update_content(
-                content_id,
-                metadata={key: result.translated_text},
+            await self.cms_client.merge_enrichment_metadata(
+                content_id, {key: result.translated_text}
             )
+            result.write_back_status = "persisted"
             logger.info("translation_writeback_complete", content_id=content_id)
-        except Exception as exc:
+        except Exception:
+            result.write_back_status = "failed"
+            result.write_back_error = "cms_writeback_failed"
             logger.error(
                 "translation_writeback_failed",
                 content_id=content_id,
-                error=str(exc),
             )

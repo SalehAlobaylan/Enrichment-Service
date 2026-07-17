@@ -3,13 +3,17 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
+from src.common.utils.metrics import feed_news_compatibility_requests_total
+
 
 def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, str]) -> None:
+    before = feed_news_compatibility_requests_total._value.get()
     cms = client.app.state.cms_client  # type: ignore[union-attr]
     cms.get_content_item_basic = AsyncMock(
         return_value={
             "id": "anchor-1",
-            "type": "ARTICLE",
+            "type": "NEWS",
+            "format": "ARTICLE",
             "title": "Saudi climate announcement",
             "excerpt": "summary",
             "source_name": "wam",
@@ -19,18 +23,21 @@ def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, 
     cms.get_content_embeddings = AsyncMock(
         return_value={
             "embedding": [0.1] * 1024,
-            "embedding_sparse": {"100": 0.5},
+            "embedding_space_id": "qwen-test-space-v1",
         }
     )
     cms.knn_dense = AsyncMock(
-        return_value=[{"id": "tweet-1", "type": "TWEET"}, {"id": "tweet-2", "type": "TWEET"}]
+        return_value=[
+            {"id": "tweet-1", "type": "NEWS", "format": "TWEET"},
+            {"id": "tweet-2", "type": "NEWS", "format": "TWEET"},
+        ]
     )
-    cms.knn_sparse = AsyncMock(return_value=[])
     cms.batch_text = AsyncMock(
         return_value=[
             {
                 "id": "anchor-1",
-                "type": "ARTICLE",
+                "type": "NEWS",
+                "format": "ARTICLE",
                 "title": "Saudi climate announcement",
                 "excerpt": "summary",
                 "body_text": None,
@@ -39,7 +46,8 @@ def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, 
             },
             {
                 "id": "tweet-1",
-                "type": "TWEET",
+                "type": "NEWS",
+                "format": "TWEET",
                 "title": None,
                 "excerpt": None,
                 "body_text": "Great announcement!",
@@ -48,7 +56,8 @@ def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, 
             },
             {
                 "id": "tweet-2",
-                "type": "TWEET",
+                "type": "NEWS",
+                "format": "TWEET",
                 "title": None,
                 "excerpt": None,
                 "body_text": "Another perspective",
@@ -72,6 +81,7 @@ def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, 
     assert data["anchor"]["title"] == "Saudi climate announcement"
     assert len(data["related"]) == 2
     assert {r["content_id"] for r in data["related"]} == {"tweet-1", "tweet-2"}
+    assert feed_news_compatibility_requests_total._value.get() == before + 1
 
 
 def test_feed_news_slide_requires_anchor(

@@ -1,28 +1,18 @@
-.PHONY: dev run install install-dev test test-unit test-integration test-coverage lint format docker-build docker-up download-models ensure-venv ensure-runtime ensure-dev
+.PHONY: dev run install install-dev test test-unit test-integration test-coverage lint typecheck format docker-build docker-build-reranker docker-up download-models dependency-check export-requirements ensure-venv ensure-runtime ensure-dev
 
 PYTHON ?= python3
+UV ?= uv
 VENV ?= .venv
 VENV_PYTHON := $(VENV)/bin/python
-VENV_PIP := $(VENV)/bin/pip
 
 ensure-venv:
-	@test -x "$(VENV_PYTHON)" || $(PYTHON) -m venv "$(VENV)"
+	@test -x "$(VENV_PYTHON)" || $(UV) venv --python "$(PYTHON)" "$(VENV)"
 
 ensure-runtime: ensure-venv
-	@$(VENV_PYTHON) -c "import fastapi, uvicorn" >/dev/null 2>&1 || { \
-		$(VENV_PYTHON) -m pip install --upgrade pip && \
-		$(VENV_PIP) install -r requirements.txt && \
-		$(VENV_PYTHON) -m playwright install chromium; \
-	}
+	$(UV) sync --frozen --no-dev --no-install-project
 
 ensure-dev: ensure-venv
-	@$(VENV_PYTHON) -c "import fastapi, uvicorn" >/dev/null 2>&1 || { \
-		$(VENV_PYTHON) -m pip install --upgrade pip && \
-		$(VENV_PIP) install -r requirements-dev.txt && \
-		$(VENV_PYTHON) -m playwright install chromium; \
-	}
-	@$(VENV_PYTHON) -m pytest --version >/dev/null 2>&1
-	@$(VENV_PYTHON) -m ruff --version >/dev/null 2>&1
+	$(UV) sync --frozen --all-extras --no-install-project
 
 run: ensure-runtime
 	$(VENV_PYTHON) -m uvicorn src.main:app --host 0.0.0.0 --port $${PORT:-5050}
@@ -31,14 +21,10 @@ dev: ensure-dev
 	$(VENV_PYTHON) -m uvicorn src.main:app --host 0.0.0.0 --port $${PORT:-5050} --reload
 
 install: ensure-venv
-	$(VENV_PYTHON) -m pip install --upgrade pip
-	$(VENV_PIP) install -r requirements.txt
-	$(VENV_PYTHON) -m playwright install chromium
+	$(UV) sync --frozen --no-dev --no-install-project
 
 install-dev: ensure-venv
-	$(VENV_PYTHON) -m pip install --upgrade pip
-	$(VENV_PIP) install -r requirements-dev.txt
-	$(VENV_PYTHON) -m playwright install chromium
+	$(UV) sync --frozen --all-extras --no-install-project
 
 test: ensure-dev
 	$(VENV_PYTHON) -m pytest tests/ -v
@@ -57,14 +43,27 @@ test-coverage: ensure-dev
 lint: ensure-dev
 	$(VENV_PYTHON) -m ruff check src/ tests/
 
+typecheck: ensure-dev
+	$(VENV_PYTHON) -m pyright
+
 format: ensure-dev
 	$(VENV_PYTHON) -m ruff format src/ tests/
 
 download-models: ensure-runtime
 	$(VENV_PYTHON) scripts/download_models.py
 
+dependency-check:
+	$(UV) lock --check
+
+export-requirements:
+	@echo "Compatibility exports are intentionally not tracked; use:"
+	@echo "  $(UV) export --frozen --no-dev --no-emit-project --format requirements-txt"
+
 docker-build:
-	docker build -t enrichment-service .
+	docker build --target api -t enrichment-service .
+
+docker-build-reranker:
+	docker build --target reranker -t enrichment-service-reranker .
 
 docker-up:
 	docker compose up --build

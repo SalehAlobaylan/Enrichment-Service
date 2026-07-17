@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from src.common.clients.cms import CMSClient
 from src.common.config import Settings
+from src.common.workload_admission import WorkloadAdmission
 from src.llm.clients.llm import LLMClient
 from src.main import app
 
@@ -13,6 +14,7 @@ from src.main import app
 def test_settings() -> Settings:
     return Settings(
         SERVICE_AUTH_TOKEN="test-token",
+        ENRICHMENT_RESTART_TOKEN="test-restart-token",
         CMS_SERVICE_TOKEN="test-cms-token",
         CMS_BASE_URL="http://localhost:8080",
         MODELS_DIR="./test-models",
@@ -34,6 +36,13 @@ def mock_model_manager() -> MagicMock:
     manager.embedder.is_loaded = True
     manager.embedder.model_name = "Qwen/Qwen3-Embedding-0.6B"
     manager.embedder.dimensions = 1024
+    manager.embedder.space_descriptor.return_value = {
+        "model": "Qwen/Qwen3-Embedding-0.6B",
+        "revision": "test-revision-immutable",
+        "dimensions": 1024,
+        "space_id": "qwen-test-space-v1",
+        "producer_id": "qwen-test-producer-v1",
+    }
 
     # Reranker mock — bge-reranker-v2-m3 (Slice B). Default scores are
     # decreasing, so when the orchestration test re-ranks N candidates the
@@ -51,13 +60,13 @@ def mock_cms_client() -> AsyncMock:
     client.health_check.return_value = True
     client.store_embedding.return_value = {"ok": True}
     client.update_content.return_value = {"ok": True}
+    client.merge_enrichment_metadata.return_value = {"success": True}
     # Slice A/B defaults — individual tests override as needed.
     client.get_content_embeddings.return_value = {
         "embedding": [0.1] * 1024,
-        "embedding_sparse": {"100": 0.5},
+        "embedding_space_id": "qwen-test-space-v1",
     }
     client.knn_dense.return_value = []
-    client.knn_sparse.return_value = []
     client.batch_text.return_value = []
     client.get_content_item_basic.return_value = {
         "id": "anchor-id",
@@ -91,4 +100,5 @@ def client(
     app.state.model_manager = mock_model_manager
     app.state.cms_client = mock_cms_client
     app.state.llm_client = mock_llm_client
+    app.state.workload_admission = WorkloadAdmission()
     return TestClient(app, raise_server_exceptions=False)

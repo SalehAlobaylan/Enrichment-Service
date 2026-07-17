@@ -31,6 +31,8 @@ from src.retrieval.models.reranker import RerankerWrapper
 
 logger = get_logger(__name__)
 
+EMBEDDING_DIMENSIONS = 1024
+
 
 class ModelManager:
     def __init__(self, settings: Settings) -> None:
@@ -46,16 +48,20 @@ class ModelManager:
             self.role == "api" and bool(settings.RERANKER_BASE_URL.strip())
         )
 
-        self.embedder = EmbedderWrapper(
-            model_name=settings.EMBEDDING_MODEL,
-            cache_folder=settings.MODELS_DIR,
-            revision=settings.EMBEDDING_MODEL_REVISION,
+        self.embedder = (
+            None
+            if self.role == "reranker"
+            else EmbedderWrapper(
+                model_name=settings.EMBEDDING_MODEL,
+                cache_folder=settings.MODELS_DIR,
+                revision=settings.EMBEDDING_MODEL_REVISION,
+            )
         )
 
         if self._use_remote_reranker:
             self.reranker = RerankerClient(
                 base_url=settings.RERANKER_BASE_URL.strip(),
-                token=settings.SERVICE_AUTH_TOKEN,
+                token=settings.RERANKER_SERVICE_TOKEN,
                 model_name=settings.RERANKER_MODEL,
             )
         else:
@@ -66,20 +72,29 @@ class ModelManager:
 
     @property
     def is_ready(self) -> dict[str, bool]:
-        return {
-            "embedder": self.embedder.is_loaded,
-            "reranker": self.reranker.is_loaded,
-        }
+        result = {"reranker": self.reranker.is_loaded}
+        if self.embedder is not None:
+            result["embedder"] = self.embedder.is_loaded
+        return result
 
     @property
     def all_ready(self) -> bool:
         # The reranker-role instance has no embedder — its readiness is the
         # reranker. Every other role gates on the embedder; the reranker is
-        # best-effort (/v1/related + /v1/feed/news/slide degrade to RRF order
+        # best-effort (/v1/related + /v1/feed/news/slide retain dense-kNN order
         # when it's unavailable), so it never gates /ready on the api role.
         if self.role == "reranker":
             return self.reranker.is_loaded
-        return self.embedder.is_loaded
+        if self.embedder is None:
+            return False
+        if not self.embedder.is_loaded or self.embedder.dimensions != EMBEDDING_DIMENSIONS:
+            return False
+        descriptor = self.embedder.space_descriptor()
+        return bool(
+            descriptor.get("revision")
+            and descriptor.get("space_id")
+            and descriptor.get("producer_id")
+        )
 
     async def warmup(self) -> None:
         loop = asyncio.get_event_loop()
@@ -123,3 +138,13 @@ class ModelManager:
             logger.info("model_loaded", model="reranker")
         except Exception as result:  # noqa: BLE001
             logger.error("model_load_failed", model="reranker", error=str(result))
+
+    def close(self) -> None:
+        """Release only resources owned by this role."""
+        close = getattr(self.reranker, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reranker_close_failed", error=str(exc))
+        self._executor.shutdown(wait=False, cancel_futures=True)

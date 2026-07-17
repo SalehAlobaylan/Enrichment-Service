@@ -1,9 +1,9 @@
 """Schemas for POST /v1/feed/news/slide — News-feed slide assembly (Slice B).
 
-A News-feed slide is the platform's editorial unit: one featured ARTICLE
-(the anchor) plus N related TWEET/COMMENT items that contextualize it.
-This endpoint hands the caller the fully-assembled list — relevance from
-the reranker + product-feel from the ranking rules.
+This is an internal compatibility helper, not the public News-feed serving
+path. It works with canonical NEWS items, filtering their ARTICLE, TWEET, and
+COMMENT formats independently. CMS owns story assembly and public feed
+visibility.
 """
 from pydantic import BaseModel, Field
 
@@ -17,10 +17,9 @@ class FeedNewsSlideRequest(BaseModel):
     # Final items returned (post-ranking-rules). The slice's CLAUDE.md
     # standard is 3 related per slide; allow up to 20 for flexibility.
     k: int = Field(3, ge=1, le=20)
-    # Restrict related items to specific content types. Default
-    # (`["TWEET","COMMENT"]`) matches the News-feed contract; callers can
-    # override (e.g., to find related ARTICLE items for a search UI).
+    # Canonical kinds and optional NEWS formats are filtered independently.
     types: list[str] | None = None
+    formats: list[str] | None = None
     # Additional ids to exclude from results (anchor is auto-excluded).
     # Typical use: items the user has already been shown this session.
     exclude_ids: list[str] | None = None

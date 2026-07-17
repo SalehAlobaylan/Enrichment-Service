@@ -2,6 +2,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from src.common.utils.logging import get_logger
+from src.common.workload_admission import RETRY_AFTER_SEC, WorkloadOverloadedError
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,19 @@ async def global_error_handler(request: Request, exc: Exception) -> JSONResponse
                 "error_code": "CIRCUIT_OPEN",
                 "retryable": True,
                 "retry_after_seconds": 30,
+                "request_id": request_id,
+            },
+        )
+
+    if isinstance(exc, WorkloadOverloadedError):
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(RETRY_AFTER_SEC)},
+            content={
+                "error": "Workload is temporarily at capacity",
+                "error_code": "WORKLOAD_OVERLOADED",
+                "retryable": True,
+                "retry_after_seconds": RETRY_AFTER_SEC,
                 "request_id": request_id,
             },
         )

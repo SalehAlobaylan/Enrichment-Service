@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from src.common.middleware.error_handler import ExtractionError
 from src.common.utils.logging import get_logger
 from src.common.utils.url_guard import UnsafeURLError, validate_public_url
+from src.common.workload_admission import WorkloadExecutors
 from src.extraction.schemas.extract import TelegramChannelResponse, TelegramPost
 from src.extraction.services.extraction import _first, _get_fetcher
 
@@ -35,7 +36,7 @@ def tg_username(raw: str) -> str:
     s = s.lstrip("@")
     if s.startswith("s/"):
         s = s[2:]
-    s = re.split(r"[/?#]", s, 1)[0]
+    s = re.split(r"[/?#]", s, maxsplit=1)[0]
     return s.strip().lower()
 
 
@@ -72,10 +73,15 @@ def _parse_subscribers(value: str | None) -> int:
 class TelegramChannelService:
     """Scrape + parse one t.me/s/<username> preview page."""
 
-    def __init__(self, timeout_sec: int = 30):
+    def __init__(
+        self, timeout_sec: int = 30, executors: WorkloadExecutors | None = None
+    ) -> None:
         self.timeout_sec = timeout_sec
+        self.executors = executors
 
     async def fetch(self, username: str) -> TelegramChannelResponse:
+        if self.executors is not None:
+            return await self.executors.run("extraction", self._do_fetch, username)
         return await asyncio.to_thread(self._do_fetch, username)
 
     def _do_fetch(self, raw_username: str) -> TelegramChannelResponse:

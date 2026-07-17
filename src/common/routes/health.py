@@ -16,34 +16,34 @@ def _model_items(model_manager) -> list[ModelInfoItem]:
     `type` is the role (embedder/reranker) so the admin dashboard can join it
     against the /ready `models` bool-map keys to show names + dims.
     """
-    raw_desc = (
-        model_manager.embedder.space_descriptor()
-        if model_manager.embedder.is_loaded
-        else {}
-    )
-    embedder_desc = raw_desc if isinstance(raw_desc, dict) else {}
-    return [
-        ModelInfoItem(
-            name=model_manager.embedder.model_name,
-            loaded=model_manager.embedder.is_loaded,
-            type="embedder",
-            dimensions=model_manager.embedder.dimensions
-            if model_manager.embedder.is_loaded
-            else None,
-            revision=embedder_desc.get("revision"),
-            normalized=embedder_desc.get("normalized"),
-            pooling=embedder_desc.get("pooling"),
-            space_id=embedder_desc.get("space_id"),
-            producer_recipe=embedder_desc.get("producer_recipe"),
-            producer_id=embedder_desc.get("producer_id"),
-        ),
+    items: list[ModelInfoItem] = []
+    embedder = getattr(model_manager, "embedder", None)
+    if embedder is not None:
+        raw_desc = embedder.space_descriptor() if embedder.is_loaded else {}
+        embedder_desc = raw_desc if isinstance(raw_desc, dict) else {}
+        items.append(
+            ModelInfoItem(
+                name=embedder.model_name,
+                loaded=embedder.is_loaded,
+                type="embedder",
+                dimensions=embedder.dimensions if embedder.is_loaded else None,
+                revision=embedder_desc.get("revision"),
+                normalized=embedder_desc.get("normalized"),
+                pooling=embedder_desc.get("pooling"),
+                space_id=embedder_desc.get("space_id"),
+                producer_recipe=embedder_desc.get("producer_recipe"),
+                producer_id=embedder_desc.get("producer_id"),
+            )
+        )
+    items.append(
         ModelInfoItem(
             name=model_manager.reranker.model_name,
             loaded=model_manager.reranker.is_loaded,
             type="reranker",
             dimensions=None,
-        ),
-    ]
+        )
+    )
+    return items
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -58,10 +58,10 @@ async def health() -> HealthResponse:
 @router.get("/ready", response_model=ReadyResponse)
 async def ready(request: Request, response: Response) -> ReadyResponse:
     model_manager = request.app.state.model_manager
-    cms_client = request.app.state.cms_client
+    cms_client = getattr(request.app.state, "cms_client", None)
 
     models_status = model_manager.is_ready
-    cms_reachable = await cms_client.health_check()
+    cms_reachable = await cms_client.health_check() if cms_client is not None else False
 
     # The reranker-role split deployment (TEMP — see ModelManager) only serves
     # /v1/rerank and never calls CMS, so its readiness must NOT gate on CMS —
@@ -94,6 +94,6 @@ async def models(request: Request) -> ModelsResponse:
     Whisper + CLIP are reported by Media-Service's /v1/models endpoint.
     Enrichment hosts:
       - embedder: Qwen3-Embedding-0.6B (1024-dim dense text vectors, dense-only)
-      - reranker: bge-reranker-v2-m3 (cross-encoder for /v1/feed/news/slide)
+      - reranker: bge-reranker-v2-m3 (cross-encoder for /v1/rerank)
     """
     return ModelsResponse(models=_model_items(request.app.state.model_manager))

@@ -1,8 +1,14 @@
 from pydantic import BaseModel, Field
 
+MAX_URL_CHARS = 2_048
+MAX_SOURCE_REF_CHARS = 512
+MAX_SEARCH_QUERY_CHARS = 400
+MAX_DISCOVERY_LIMIT = 40
+MAX_RESOLVE_LINKS = 50
+
 
 class ExtractRequest(BaseModel):
-    url: str = Field(..., min_length=1)
+    url: str = Field(..., min_length=1, max_length=MAX_URL_CHARS)
     include_html: bool = False
 
 
@@ -38,7 +44,7 @@ class FeedExtractResponse(BaseModel):
 
 class TelegramChannelRequest(BaseModel):
     # Bare username, @handle, or any t.me URL — normalized server-side.
-    username: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=1, max_length=MAX_SOURCE_REF_CHARS)
 
 
 class TelegramPost(BaseModel):
@@ -66,7 +72,7 @@ class TelegramChannelResponse(BaseModel):
 
 class TwitterProfileRequest(BaseModel):
     # Bare handle, @handle, or any x.com/twitter.com URL — normalized server-side.
-    username: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=1, max_length=MAX_SOURCE_REF_CHARS)
 
 
 class TwitterPost(BaseModel):
@@ -106,8 +112,8 @@ class TwitterProfileResponse(BaseModel):
 class TwitterRecommendationsRequest(BaseModel):
     # Seed account: bare handle, @handle, x.com URL, or a numeric user_id —
     # normalized server-side. X recommends accounts SIMILAR to this seed.
-    seed: str = Field(..., min_length=1)
-    limit: int = 40
+    seed: str = Field(..., min_length=1, max_length=MAX_SOURCE_REF_CHARS)
+    limit: int = Field(default=40, ge=1, le=MAX_DISCOVERY_LIMIT)
 
 
 class TwitterRecAccount(BaseModel):
@@ -148,7 +154,7 @@ class TwitterRecommendationsResponse(BaseModel):
 
 class YouTubeChannelRequest(BaseModel):
     # @handle, UC… channel id, or a youtube.com channel URL.
-    channel: str = Field(..., min_length=1)
+    channel: str = Field(..., min_length=1, max_length=MAX_SOURCE_REF_CHARS)
 
 
 class YouTubeVideo(BaseModel):
@@ -179,7 +185,7 @@ class YouTubeChannelResponse(BaseModel):
 
 
 class YouTubeRelatedRequest(BaseModel):
-    channel: str = Field(..., min_length=1)
+    channel: str = Field(..., min_length=1, max_length=MAX_SOURCE_REF_CHARS)
 
 
 class YouTubeRelatedChannel(BaseModel):
@@ -204,8 +210,8 @@ class YouTubeRelatedResponse(BaseModel):
 
 class ApplePodcastRelatedRequest(BaseModel):
     # Apple podcast collection id (numeric adamId).
-    collection_id: str = Field(..., min_length=1)
-    country: str = "us"
+    collection_id: str = Field(..., min_length=1, max_length=64)
+    country: str = Field(default="us", min_length=2, max_length=2)
 
 
 class AppleRelatedShow(BaseModel):
@@ -230,8 +236,8 @@ class ApplePodcastRelatedResponse(BaseModel):
 
 
 class YouTubeSearchRequest(BaseModel):
-    query: str = Field(..., min_length=1)
-    limit: int = 15
+    query: str = Field(..., min_length=1, max_length=MAX_SEARCH_QUERY_CHARS)
+    limit: int = Field(default=15, ge=1, le=MAX_DISCOVERY_LIMIT)
 
 
 class YouTubeSearchChannel(BaseModel):
@@ -270,8 +276,8 @@ class ExtractedChannel(BaseModel):
 
 class YouTubePodcastSearchRequest(BaseModel):
     # Podcast-intent phrase, e.g. "بودكاست اقتصاد" / "tech podcast".
-    query: str = Field(..., min_length=1)
-    limit: int = 15
+    query: str = Field(..., min_length=1, max_length=MAX_SEARCH_QUERY_CHARS)
+    limit: int = Field(default=15, ge=1, le=MAX_DISCOVERY_LIMIT)
 
 
 class YouTubePodcastSearchResponse(BaseModel):
@@ -293,7 +299,9 @@ class YouTubeResolveLinksRequest(BaseModel):
     # One YouTube reference per item: a @handle, channel URL, /channel/UC… URL,
     # raw UC… id, or any video / share / shorts link. The low-friction seed path
     # (each line is two taps off the Share button — no DevTools JSON paste).
-    inputs: list[str] = Field(default_factory=list)
+    inputs: list[str] = Field(
+        default_factory=list, min_length=1, max_length=MAX_RESOLVE_LINKS
+    )
 
 
 class YouTubeResolveLinksResponse(BaseModel):

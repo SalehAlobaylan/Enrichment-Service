@@ -84,17 +84,19 @@ class SummarizationService:
 
     async def _write_back(self, content_id: str, result: SummarizeResponse) -> None:
         try:
-            await self.cms_client.update_content(
+            await self.cms_client.merge_enrichment_metadata(
                 content_id,
-                metadata={
+                {
                     "summary": result.summary,
                     "key_points": result.key_points,
                 },
             )
+            result.write_back_status = "persisted"
             logger.info("summary_writeback_complete", content_id=content_id)
-        except Exception as exc:
+        except Exception:
+            result.write_back_status = "failed"
+            result.write_back_error = "cms_writeback_failed"
             logger.error(
                 "summary_writeback_failed",
                 content_id=content_id,
-                error=str(exc),
             )

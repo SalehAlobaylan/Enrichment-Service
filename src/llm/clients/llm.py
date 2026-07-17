@@ -2,7 +2,9 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, TYPE_CHECKING
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from src.common.config import Settings
@@ -10,15 +12,19 @@ from src.common.middleware.error_handler import LLMError
 from src.common.middleware.request_id import current_request_id
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import (
+    llm_attempts_total,
     llm_cache_hits_total,
     llm_cache_misses_total,
+    llm_deadline_exhaustions_total,
     llm_errors_total,
     llm_fallback_invocations_total,
     llm_request_duration,
     llm_requests_total,
     llm_retries_total,
 )
+from src.common.workload_admission import WorkloadAdmission, WorkloadExecutors
 from src.llm.clients.llm_cache import LLMCache
+from src.llm.clients.spend_meter import SpendMeter
 
 if TYPE_CHECKING:
     from src.common.clients.cms import CMSClient
@@ -33,6 +39,36 @@ logger = get_logger(__name__)
 # Retry policy — applied uniformly across providers per attempt.
 MAX_ATTEMPTS = 3
 BASE_BACKOFF_SEC = 1.0  # 1s, 2s, 4s with jitter
+# This is deliberately a code policy, rather than another operator tuning
+# knob. Every provider attempt, retry sleep, and fallback shares this one
+# budget, keeping a slow outage from multiplying request latency or spend.
+REQUEST_DEADLINE_SEC = 30.0
+MIN_ATTEMPT_BUDGET_SEC = 0.25
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Read Retry-After without exposing provider-specific error classes."""
+    retry_after = getattr(exc, "retry_after", None)
+    if isinstance(retry_after, (int, float)) and retry_after >= 0:
+        return float(retry_after)
+
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or getattr(exc, "headers", None)
+    if not headers:
+        return None
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=UTC)
+            return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
 
 
 def _classify_error(exc: Exception) -> tuple[str, bool]:
@@ -101,11 +137,22 @@ class LLMClient:
     On overall failure, raises the last LLMError encountered.
     """
 
-    def __init__(self, settings: Settings, cache: LLMCache | None = None, cms_client: "CMSClient | None" = None):
+    def __init__(
+        self,
+        settings: Settings,
+        cache: LLMCache | None = None,
+        cms_client: "CMSClient | None" = None,
+        admission: WorkloadAdmission | None = None,
+        spend_meter: SpendMeter | None = None,
+        executors: WorkloadExecutors | None = None,
+    ) -> None:
         self.settings = settings
         self.primary_provider = (settings.LLM_PROVIDER or "").strip().lower()
         self._cache = cache if settings.LLM_CACHE_ENABLED else None
         self._cms_client = cms_client
+        self._admission = admission
+        self._spend_meter = spend_meter
+        self._executors = executors
         self._clients: dict[str, object] = {}
         self._dispatch: dict[str, _ProviderCall] = {}
 
@@ -114,17 +161,25 @@ class LLMClient:
         if settings.OPENAI_API_KEY:
             from openai import AsyncOpenAI
 
-            self._clients["openai"] = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            self._clients["openai"] = AsyncOpenAI(
+                api_key=settings.OPENAI_API_KEY,
+                timeout=REQUEST_DEADLINE_SEC,
+                max_retries=0,
+            )
             self._dispatch["openai"] = self._openai_complete
 
         if settings.ANTHROPIC_API_KEY:
             from anthropic import AsyncAnthropic
 
-            self._clients["anthropic"] = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+            self._clients["anthropic"] = AsyncAnthropic(
+                api_key=settings.ANTHROPIC_API_KEY,
+                timeout=REQUEST_DEADLINE_SEC,
+                max_retries=0,
+            )
             self._dispatch["anthropic"] = self._anthropic_complete
 
         if settings.GEMINI_API_KEY:
-            from google import genai
+            import google.genai as genai
 
             self._clients["gemini"] = genai.Client(api_key=settings.GEMINI_API_KEY)
             self._dispatch["gemini"] = self._gemini_complete
@@ -140,6 +195,8 @@ class LLMClient:
             self._clients["deepseek"] = AsyncOpenAI(
                 api_key=settings.DEEPSEEK_API_KEY,
                 base_url="https://api.deepseek.com/v1",
+                timeout=REQUEST_DEADLINE_SEC,
+                max_retries=0,
             )
             self._dispatch["deepseek"] = self._deepseek_complete
 
@@ -152,6 +209,19 @@ class LLMClient:
     def model(self) -> str:
         """Backward-compat alias for the primary model."""
         return self.settings.LLM_MODEL
+
+    async def close(self) -> None:
+        """Close SDK transports without letting shutdown failures block exit."""
+        for client in self._clients.values():
+            close = getattr(client, "aclose", None) or getattr(client, "close", None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.warning("llm_client_close_failed", client_type=type(client).__name__)
 
     def _provider_chain(self) -> list[str]:
         """Primary first, then configured fallbacks. Empty list if no provider."""
@@ -224,7 +294,11 @@ class LLMClient:
 
         last_error: LLMError | None = None
         winner: str | None = None
+        deadline = asyncio.get_running_loop().time() + REQUEST_DEADLINE_SEC
         for idx, provider in enumerate(chain):
+            if self._remaining_budget(deadline) < MIN_ATTEMPT_BUDGET_SEC:
+                last_error = self._deadline_error(operation)
+                break
             if idx > 0:
                 llm_fallback_invocations_total.labels(
                     from_provider=chain[idx - 1],
@@ -239,7 +313,13 @@ class LLMClient:
                 )
             try:
                 result, usage = await self._attempt_provider(
-                    provider, system_prompt, user_prompt, max_tokens, temperature, operation
+                    provider,
+                    system_prompt,
+                    user_prompt,
+                    max_tokens,
+                    temperature,
+                    operation,
+                    deadline,
                 )
                 winner = provider
                 # Cache only when the PRIMARY provider succeeded — fallback
@@ -263,6 +343,15 @@ class LLMClient:
         assert last_error is not None
         raise last_error
 
+    @staticmethod
+    def _remaining_budget(deadline: float) -> float:
+        return deadline - asyncio.get_running_loop().time()
+
+    @staticmethod
+    def _deadline_error(operation: str) -> LLMError:
+        llm_deadline_exhaustions_total.labels(operation=operation).inc()
+        return LLMError("LLM request deadline exceeded")
+
     async def _attempt_provider(
         self,
         provider: str,
@@ -271,6 +360,7 @@ class LLMClient:
         max_tokens: int,
         temperature: float,
         operation: str,
+        deadline: float,
     ) -> tuple[str, dict[str, int]]:
         """Run one provider through the retry loop. Raises LLMError on exhaustion.
 
@@ -281,9 +371,23 @@ class LLMClient:
 
         last_exc: Exception | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
+            remaining = self._remaining_budget(deadline)
+            if remaining < MIN_ATTEMPT_BUDGET_SEC:
+                raise self._deadline_error(operation)
             start = time.perf_counter()
             try:
-                result = await call(system_prompt, user_prompt, max_tokens, temperature)
+                if self._admission is None:
+                    async with asyncio.timeout(remaining):
+                        result = await call(system_prompt, user_prompt, max_tokens, temperature)
+                else:
+                    async with self._admission.acquire("llm_sync"):
+                        async with asyncio.timeout(remaining):
+                            result = await call(
+                                system_prompt, user_prompt, max_tokens, temperature
+                            )
+                llm_attempts_total.labels(
+                    provider=provider, operation=operation, status="success"
+                ).inc()
                 llm_request_duration.labels(
                     provider=provider, operation=operation
                 ).observe(time.perf_counter() - start)
@@ -300,11 +404,32 @@ class LLMClient:
                 llm_errors_total.labels(
                     provider=provider, error_type="empty_response"
                 ).inc()
+                llm_attempts_total.labels(
+                    provider=provider, operation=operation, status="failure"
+                ).inc()
                 raise LLMError(f"{provider}: {exc}") from exc
+            except TimeoutError as exc:
+                last_exc = exc
+                llm_errors_total.labels(provider=provider, error_type="timeout").inc()
+                llm_attempts_total.labels(
+                    provider=provider, operation=operation, status="timeout"
+                ).inc()
+                if self._remaining_budget(deadline) < MIN_ATTEMPT_BUDGET_SEC:
+                    raise self._deadline_error(operation) from exc
+                # A provider attempt timeout is transient, but remains subject
+                # to the same global budget before another provider is tried.
+                if attempt == MAX_ATTEMPTS:
+                    llm_requests_total.labels(
+                        provider=provider, operation=operation, status="failure"
+                    ).inc()
+                    raise LLMError(f"{provider}: request timed out") from exc
             except Exception as exc:
                 last_exc = exc
                 error_type, retryable = _classify_error(exc)
                 llm_errors_total.labels(provider=provider, error_type=error_type).inc()
+                llm_attempts_total.labels(
+                    provider=provider, operation=operation, status="failure"
+                ).inc()
                 logger.warning(
                     "llm_request_error",
                     provider=provider,
@@ -321,10 +446,18 @@ class LLMClient:
                     ).inc()
                     raise LLMError(f"{provider}: {exc}") from exc
 
+            # Retry timing intentionally lives outside the exception branches:
+            # both SDK timeouts and retryable transport/status errors use it.
+            if attempt < MAX_ATTEMPTS:
                 llm_retries_total.labels(provider=provider, operation=operation).inc()
-                backoff = BASE_BACKOFF_SEC * (2 ** (attempt - 1))
-                jitter = random.uniform(0, backoff * 0.25)
-                await asyncio.sleep(backoff + jitter)
+                backoff = _retry_after_seconds(last_exc) if last_exc else None
+                if backoff is None:
+                    base = BASE_BACKOFF_SEC * (2 ** (attempt - 1))
+                    backoff = base + random.uniform(0, base * 0.25)
+                remaining_after_backoff = self._remaining_budget(deadline) - backoff
+                if remaining_after_backoff < MIN_ATTEMPT_BUDGET_SEC:
+                    raise self._deadline_error(operation)
+                await asyncio.sleep(backoff)
 
         # Defensive — loop exits via return or raise above.
         raise LLMError(f"{provider}: {last_exc}")
@@ -334,9 +467,20 @@ class LLMClient:
         rid = current_request_id()
         return {"X-Request-ID": rid} if rid else {}
 
-    def _emit_spend(self, *, provider: str, model: str, operation: str, usage: dict[str, int], cached: bool, trigger_source: str, system_run_id: str | None, tenant_id: str) -> None:
+    def _emit_spend(
+        self,
+        *,
+        provider: str,
+        model: str,
+        operation: str,
+        usage: dict[str, int],
+        cached: bool,
+        trigger_source: str,
+        system_run_id: str | None,
+        tenant_id: str,
+    ) -> None:
         """Schedule metering without coupling LLM availability to CMS."""
-        if self._cms_client is None:
+        if self._spend_meter is None:
             return
         event: dict[str, Any] = {
             "event_id": str(uuid4()), "spend_class": "llm", "operation": operation,
@@ -346,12 +490,7 @@ class LLMClient:
             "system_run_id": system_run_id or "", "tenant_id": tenant_id,
             "source_service": "enrichment-service",
         }
-        async def write() -> None:
-            try:
-                await self._cms_client.emit_ai_spend_events([event])
-            except Exception as exc:
-                logger.warning("ai_spend_metering_failed", error=str(exc), operation=operation)
-        asyncio.create_task(write())
+        self._spend_meter.enqueue(event)
 
     async def _openai_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
@@ -373,7 +512,10 @@ class LLMClient:
         if not content:
             raise LLMError("LLM returned empty response")
         usage = response.usage
-        return content, {"input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0), "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0)}
+        return content, {
+            "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+        }
 
     async def _deepseek_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
@@ -400,7 +542,10 @@ class LLMClient:
         if not content:
             raise LLMError("LLM returned empty response")
         usage = response.usage
-        return content, {"input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0), "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0)}
+        return content, {
+            "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+        }
 
     async def _anthropic_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
@@ -419,7 +564,10 @@ class LLMClient:
         if not response.content:
             raise LLMError("LLM returned empty response")
         usage = response.usage
-        return response.content[0].text, {"input_tokens": int(getattr(usage, "input_tokens", 0) or 0), "output_tokens": int(getattr(usage, "output_tokens", 0) or 0)}
+        return response.content[0].text, {
+            "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+        }
 
     async def _gemini_complete(
         self, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
@@ -463,15 +611,28 @@ class LLMClient:
 
         # The SDK is synchronous — offload to a thread so the FastAPI event
         # loop stays responsive under concurrent translate/summarize calls.
-        response = await asyncio.to_thread(
-            client.models.generate_content,  # type: ignore[attr-defined]
-            model=model,
-            contents=user_prompt,
-            config=config,
-        )
+        if self._executors is not None:
+            response = await self._executors.run(
+                "llm_sync",
+                client.models.generate_content,  # type: ignore[attr-defined]
+                model=model,
+                contents=user_prompt,
+                config=config,
+            )
+        else:
+            response = await asyncio.to_thread(
+                client.models.generate_content,  # type: ignore[attr-defined]
+                model=model,
+                contents=user_prompt,
+                config=config,
+            )
 
         text = getattr(response, "text", None)
         if not text:
             raise LLMError("LLM returned empty response")
         usage = getattr(response, "usage_metadata", None)
-        return text, {"input_tokens": int(getattr(usage, "prompt_token_count", 0) or 0), "output_tokens": int(getattr(usage, "candidates_token_count", 0) or 0), "thoughts_tokens": int(getattr(usage, "thoughts_token_count", 0) or 0)}
+        return text, {
+            "input_tokens": int(getattr(usage, "prompt_token_count", 0) or 0),
+            "output_tokens": int(getattr(usage, "candidates_token_count", 0) or 0),
+            "thoughts_tokens": int(getattr(usage, "thoughts_token_count", 0) or 0),
+        }

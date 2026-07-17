@@ -22,6 +22,7 @@ import re
 from curl_cffi import requests as cffi
 
 from src.common.utils.logging import get_logger
+from src.common.workload_admission import WorkloadExecutors
 from src.extraction.schemas.extract import (
     ExtractedChannel,
     YouTubeChannelResponse,
@@ -322,28 +323,36 @@ def _extract_channels_from_lockups(data: dict) -> list[ExtractedChannel]:
 class YouTubeInnerTubeService:
     """Guest InnerTube reader — channel videos/subscribers + watch-next relations."""
 
-    def __init__(self, timeout_sec: int = 30):
+    def __init__(
+        self, timeout_sec: int = 30, executors: WorkloadExecutors | None = None
+    ) -> None:
         self.timeout_sec = timeout_sec
+        self.executors = executors
+
+    async def _run_blocking(self, function, *args):
+        if self.executors is not None:
+            return await self.executors.run("extraction", function, *args)
+        return await asyncio.to_thread(function, *args)
 
     async def fetch_channel(self, channel: str) -> YouTubeChannelResponse:
-        return await asyncio.to_thread(self._do_fetch_channel, channel)
+        return await self._run_blocking(self._do_fetch_channel, channel)
 
     async def fetch_related(self, channel: str) -> YouTubeRelatedResponse:
-        return await asyncio.to_thread(self._do_fetch_related, channel)
+        return await self._run_blocking(self._do_fetch_related, channel)
 
     async def search_channels(self, query: str, limit: int = 15) -> YouTubeSearchResponse:
-        return await asyncio.to_thread(self._do_search_channels, query, limit)
+        return await self._run_blocking(self._do_search_channels, query, limit)
 
     async def search_podcasts(
         self, query: str, limit: int = 15
     ) -> YouTubePodcastSearchResponse:
-        return await asyncio.to_thread(self._do_search_podcasts, query, limit)
+        return await self._run_blocking(self._do_search_podcasts, query, limit)
 
     async def parse_feed(self, raw: dict) -> list[ExtractedChannel]:
-        return await asyncio.to_thread(self._do_parse_feed, raw)
+        return await self._run_blocking(self._do_parse_feed, raw)
 
     async def resolve_links(self, inputs: list[str]) -> list[ExtractedChannel]:
-        return await asyncio.to_thread(self._do_resolve_links, inputs)
+        return await self._run_blocking(self._do_resolve_links, inputs)
 
     # ---- internals (sync; run in a thread) ----
 
@@ -445,7 +454,7 @@ class YouTubeInnerTubeService:
             bid = browse.get("browseId") or ""
             if _UC_RE.match(bid):
                 base = browse.get("canonicalBaseUrl") or ""
-                handle = base.lstrip("/") if base.startswith("/@") else None
+                handle = base.removeprefix("/@") if base.startswith("/@") else None
                 return ExtractedChannel(channel_id=bid, handle=handle)
         # Not a channel — pull the videoId and resolve its owner.
         watch = _find_first(ep, "watchEndpoint")

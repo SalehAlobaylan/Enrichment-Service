@@ -3,12 +3,12 @@
 Pipeline:
   1. Resolve anchor — fetch the full content item from CMS (for the
      response payload) AND from the embeddings endpoint (for retrieval).
-  2. Hybrid retrieval + rerank via RelatedService — large k so the
+  2. Dense retrieval + rerank via RelatedService — large k so the
      ranking rules have headroom to drop items without running short.
   3. Apply ranking rules in order:
        - freshness decay  (rescore by content-type-specific τ)
        - source diversity (cap per source_name)
-       - type quotas      (interleave to ensure required type mix)
+       - format quotas    (interleave to ensure required NEWS-format mix)
   4. Truncate to caller's k.
 
 This service does no model inference itself — it composes RelatedService
@@ -36,12 +36,9 @@ from src.retrieval.services.related import RelatedService
 
 logger = get_logger(__name__)
 
-# News-feed default — when the caller doesn't constrain types. Includes ARTICLE
-# so "related" surfaces topically-similar news even on a corpus with no
-# tweets/comments (the anchor itself is always excluded via exclude_ids, so an
-# ARTICLE anchor never relates to itself). TWEET/COMMENT fold in automatically
-# once social sources are ingested.
-_DEFAULT_TYPES = ["ARTICLE", "TWEET", "COMMENT"]
+# The canonical News slide operates on NEWS kind with format-specific mix.
+_DEFAULT_TYPES = ["NEWS"]
+_DEFAULT_FORMATS = ["ARTICLE", "TWEET", "COMMENT"]
 
 
 class FeedNewsService:
@@ -67,6 +64,7 @@ class FeedNewsService:
                 req.anchor_content_id,
                 req.k,
                 req.types,
+                req.formats,
                 req.exclude_ids,
                 rerank=True,
             )
@@ -89,13 +87,14 @@ class FeedNewsService:
             )
             anchor = self._anchor_from_payload(anchor_payload)
 
-            # 2. Hybrid retrieval + rerank. We over-fetch (RERANK_INPUT_K)
+            # 2. Dense retrieval + rerank. We over-fetch (RERANK_INPUT_K)
             # because the ranking rules below WILL drop items and we want
             # the final list to still have `k` worth of survivors.
             related_resp = await self.related.related(
                 RelatedRequest(
                     content_id=req.anchor_content_id,
                     types=req.types or _DEFAULT_TYPES,
+                    formats=req.formats or _DEFAULT_FORMATS,
                     # Auto-exclude the anchor itself, then any caller-supplied ids.
                     exclude_ids=[req.anchor_content_id, *(req.exclude_ids or [])],
                     k=self.settings.RERANK_INPUT_K,
@@ -104,12 +103,12 @@ class FeedNewsService:
             )
 
             # 3. Ranking rules (freshness first — it rescores; diversity
-            # then type quotas filter/reorder the rescored list).
+            # then format quotas filter/reorder the rescored list).
             items = ranking.apply_freshness_decay(related_resp.results, self.settings)
             items = ranking.apply_source_diversity(
                 items, self.settings.NEWS_MAX_PER_SOURCE
             )
-            items = ranking.apply_type_quotas(items, req.types or _DEFAULT_TYPES)
+            items = ranking.apply_format_quotas(items, req.formats or _DEFAULT_FORMATS)
 
             # 4. Truncate to the caller's k.
             final = items[: req.k]

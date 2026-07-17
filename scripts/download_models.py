@@ -64,14 +64,22 @@ def main() -> None:
         default="BAAI/bge-reranker-v2-m3",
         help="Cross-encoder reranker model",
     )
+    parser.add_argument(
+        "--role",
+        choices=("api", "reranker", "all"),
+        default="all",
+        help="Cache only the model artifact needed by this runtime role",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
 
-    download_embedder(args.output, args.embedding_model)
-    download_reranker(args.output, args.reranker_model)
+    if args.role in ("api", "all"):
+        download_embedder(args.output, args.embedding_model)
+    if args.role in ("reranker", "all"):
+        download_reranker(args.output, args.reranker_model)
 
-    print(f"\nAll Enrichment-Service models downloaded to {args.output}")
+    print(f"\nEnrichment-Service {args.role} model artifacts downloaded to {args.output}")
 
 
 if __name__ == "__main__":

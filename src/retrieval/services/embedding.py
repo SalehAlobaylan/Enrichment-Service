@@ -3,11 +3,14 @@ import asyncio
 from src.common.clients.cms import CMSClient
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import embedding_duration, embeddings_total
+from src.common.workload_admission import WorkloadExecutors
 from src.llm.services.tagging import TaggingService, TagsResult
 from src.retrieval.models.embedder import EmbedderWrapper
 from src.retrieval.schemas.embed import EmbedQueryResponse, EmbedResponse
 
 logger = get_logger(__name__)
+
+WRITEBACK_CONCURRENCY = 4
 
 
 def _space_descriptor(embedder: EmbedderWrapper) -> dict:
@@ -25,6 +28,7 @@ class EmbeddingService:
         embedder: EmbedderWrapper,
         cms_client: CMSClient,
         tagger: TaggingService | None = None,
+        executors: WorkloadExecutors | None = None,
     ):
         self.embedder = embedder
         self.cms_client = cms_client
@@ -32,6 +36,14 @@ class EmbeddingService:
         # tool mode (no LLM configured). When None, extract_tags=True is
         # silently ignored.
         self.tagger = tagger
+        self.executors = executors
+
+    async def _encode(self, texts: list[str], extract_sparse: bool):
+        if self.executors is not None:
+            return await self.executors.run(
+                "embedding", self.embedder.encode, texts, extract_sparse
+            )
+        return await asyncio.to_thread(self.embedder.encode, texts, extract_sparse)
 
     async def embed(
         self,
@@ -52,9 +64,7 @@ class EmbeddingService:
         # compatibility; the embedder always returns sparse=None and the CMS
         # `embedding_sparse` column stays NULL.
         with embedding_duration.time():
-            encoded = await asyncio.to_thread(
-                self.embedder.encode, texts, extract_sparse
-            )
+            encoded = await self._encode(texts, extract_sparse)
         dense_vectors: list[list[float]] = encoded["dense"]
         sparse_maps: list[dict[str, float]] | None = encoded["sparse"]
 
@@ -96,8 +106,8 @@ class EmbeddingService:
     async def embed_query(self, text: str) -> EmbedQueryResponse:
         # Query embedding path only needs dense — sparse is for write-back to
         # CMS, not for ad-hoc query embedding (callers use /v1/related for
-        # hybrid query search, which embeds with sparse internally).
-        encoded = await asyncio.to_thread(self.embedder.encode, [text], False)
+        # dense query search, which embeds query text separately).
+        encoded = await self._encode([text], False)
 
         descriptor = _space_descriptor(self.embedder)
         return EmbedQueryResponse(
@@ -131,33 +141,61 @@ class EmbeddingService:
         extraction; the CMS column stays NULL (forward-compatible with the
         Week 2b sparsevec column).
         """
-        first_error: str | None = None
-        for i, (content_id, vector) in enumerate(zip(content_ids, vectors)):
+        if len(content_ids) != len(vectors):
+            logger.error(
+                "embedding_writeback_length_mismatch",
+                content_id_count=len(content_ids),
+                vector_count=len(vectors),
+            )
+            return "failed", "writeback_length_mismatch"
+        if sparse_maps is not None and len(sparse_maps) != len(vectors):
+            logger.error(
+                "embedding_writeback_sparse_length_mismatch",
+                sparse_count=len(sparse_maps),
+                vector_count=len(vectors),
+            )
+            return "failed", "writeback_sparse_length_mismatch"
+
+        semaphore = asyncio.Semaphore(WRITEBACK_CONCURRENCY)
+
+        async def write_one(
+            i: int, content_id: str, vector: list[float]
+        ) -> str | None:
             sparse = sparse_maps[i] if sparse_maps else None
             try:
-                await self.cms_client.store_embedding(
-                    content_id,
-                    vector,
-                    topic_tags=topic_tags,
-                    embedding_sparse=sparse,
-                    model=self.embedder.model_name,
-                    space_id=descriptor.get("space_id") if descriptor else None,
-                    producer_id=descriptor.get("producer_id") if descriptor else None,
-                )
+                async with semaphore:
+                    await self.cms_client.store_embedding(
+                        content_id,
+                        vector,
+                        topic_tags=topic_tags,
+                        embedding_sparse=sparse,
+                        model=self.embedder.model_name,
+                        space_id=descriptor.get("space_id") if descriptor else None,
+                        producer_id=descriptor.get("producer_id") if descriptor else None,
+                    )
                 logger.info(
                     "embedding_writeback_complete",
                     content_id=content_id,
                     topic_tag_count=len(topic_tags) if topic_tags else 0,
                     has_sparse=sparse is not None,
                 )
-            except Exception as exc:
-                err = str(exc)
+                return None
+            except Exception:  # noqa: BLE001 - write-back is best effort
+                # Do not return provider/CMS detail to callers. A stable value
+                # preserves partial-outcome truth without leaking internals.
+                err = "cms_writeback_failed"
                 logger.error(
                     "embedding_writeback_failed",
                     content_id=content_id,
                     error=err,
                 )
-                if first_error is None:
-                    first_error = err
+                return err
 
+        errors = await asyncio.gather(
+            *(
+                write_one(i, content_id, vector)
+                for i, (content_id, vector) in enumerate(zip(content_ids, vectors))
+            )
+        )
+        first_error = next((error for error in errors if error is not None), None)
         return ("failed", first_error) if first_error else ("ok", None)
