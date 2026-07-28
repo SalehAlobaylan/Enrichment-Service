@@ -47,7 +47,7 @@ _SEARCH_CHANNELS_PARAMS = "EgIQAg%3D%3D"
 
 # YouTube categories whose content needs the picture (not audio-first). Everything
 # else (News & Politics, Education, Entertainment, People & Blogs, Comedy, Science
-# & Technology, Howto …) is talk-driven and works as audio-first For You content.
+# & Technology, Howto …) is talk-driven and works as audio-first Pods content.
 _VISUAL_CATEGORIES = {"Music", "Gaming", "Sports", "Film & Animation"}
 
 _UC_RE = re.compile(r"^UC[0-9A-Za-z_-]{22}$")

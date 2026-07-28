@@ -12,7 +12,7 @@ Pipeline:
   4. Truncate to caller's k.
 
 This service does no model inference itself — it composes RelatedService
-+ pure ranking functions. Slice C will add FeedForYouService following
++ pure ranking functions. Slice C will add FeedPodsService following
 the same pattern, with personalization rules instead of freshness/diversity.
 """
 from src.common.clients.cms import CMSClient
