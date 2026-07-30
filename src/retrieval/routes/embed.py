@@ -4,6 +4,7 @@ from src.common.auth.service_auth import verify_service_token
 from src.common.middleware.error_handler import EmbeddingError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import embeddings_total
+from src.common.workload_admission import WorkloadOverloadedError
 from src.llm.services.tagging import TaggingService
 from src.retrieval.schemas.embed import (
     EmbedQueryRequest,
@@ -44,7 +45,7 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
                 extract_tags=body.extract_tags,
                 extract_sparse=body.extract_sparse,
             )
-    except EmbeddingError:
+    except (EmbeddingError, WorkloadOverloadedError):
         raise
     except Exception as exc:
         embeddings_total.labels(status="failure").inc()
@@ -68,7 +69,7 @@ async def embed_query(body: EmbedQueryRequest, request: Request) -> EmbedQueryRe
     try:
         async with request.app.state.workload_admission.acquire("embedding"):
             return await service.embed_query(body.text)
-    except EmbeddingError:
+    except (EmbeddingError, WorkloadOverloadedError):
         raise
     except Exception as exc:
         embeddings_total.labels(status="failure").inc()

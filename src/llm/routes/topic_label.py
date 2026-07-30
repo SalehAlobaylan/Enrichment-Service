@@ -10,7 +10,8 @@ logger = get_logger(__name__)
 router = APIRouter(dependencies=[Depends(verify_service_token)])
 
 
-@router.post("/topics/label", response_model=TopicLabelResponse)
+@router.post("/stories/label", response_model=TopicLabelResponse)
+@router.post("/topics/label", response_model=TopicLabelResponse, include_in_schema=False)
 async def topic_label(body: TopicLabelRequest, request: Request) -> TopicLabelResponse:
     llm_client = request.app.state.llm_client
     service = TopicLabelingService(llm_client)

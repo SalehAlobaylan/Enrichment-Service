@@ -1,5 +1,7 @@
 import asyncio
 import threading
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +10,8 @@ from src.common.workload_admission import (
     WorkloadExecutors,
     WorkloadOverloadedError,
 )
+from src.retrieval.routes.embed import embed
+from src.retrieval.schemas.embed import EmbedRequest
 
 
 @pytest.mark.asyncio
@@ -31,6 +35,32 @@ async def test_saturated_workload_rejects_without_starting_extra_work(
             pytest.fail("admission must not start work after rejecting")
     release.set()
     await first
+
+
+@pytest.mark.asyncio
+async def test_embed_route_preserves_retryable_overload() -> None:
+    class RejectingAdmission:
+        @asynccontextmanager
+        async def acquire(self, workload: str):
+            raise WorkloadOverloadedError(workload)
+            yield
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                model_manager=SimpleNamespace(
+                    embedder=SimpleNamespace(is_loaded=True),
+                ),
+                cms_client=SimpleNamespace(),
+                llm_client=SimpleNamespace(),
+                workload_admission=RejectingAdmission(),
+                workload_executors=None,
+            ),
+        ),
+    )
+
+    with pytest.raises(WorkloadOverloadedError, match="embedding workload"):
+        await embed(EmbedRequest(texts=["capacity test"]), request)
 
 
 @pytest.mark.asyncio

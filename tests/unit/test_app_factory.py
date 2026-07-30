@@ -18,5 +18,12 @@ def test_reranker_role_mounts_only_operations_and_rerank_surface() -> None:
 
 def test_api_role_mounts_the_full_text_intelligence_surface() -> None:
     paths = _paths(Settings(ENRICHMENT_ROLE="api", CORS_ALLOWED_ORIGINS=""))
-    assert {"/v1/embed", "/v1/related", "/v1/extract", "/v1/translate"} <= paths
+    assert {
+        "/v1/embed",
+        "/v1/related",
+        "/v1/extract",
+        "/v1/translate",
+        "/v1/stories/digest",
+        "/v1/stories/label",
+    } <= paths
     assert "/v1/rerank" in paths

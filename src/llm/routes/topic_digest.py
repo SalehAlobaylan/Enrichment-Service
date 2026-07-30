@@ -10,7 +10,8 @@ logger = get_logger(__name__)
 router = APIRouter(dependencies=[Depends(verify_service_token)])
 
 
-@router.post("/topics/digest", response_model=TopicDigestResponse)
+@router.post("/stories/digest", response_model=TopicDigestResponse)
+@router.post("/topics/digest", response_model=TopicDigestResponse, include_in_schema=False)
 async def topic_digest(body: TopicDigestRequest, request: Request) -> TopicDigestResponse:
     llm_client = request.app.state.llm_client
     service = TopicDigestService(llm_client)
