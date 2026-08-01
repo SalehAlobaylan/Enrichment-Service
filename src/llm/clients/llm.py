@@ -2,6 +2,7 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
@@ -119,6 +120,17 @@ def _classify_error(exc: Exception) -> tuple[str, bool]:
 
 # Type alias for a per-provider call: (system_prompt, user_prompt, max_tokens, temperature) -> text
 _ProviderCall = Callable[[str, str, int, float], Awaitable[tuple[str, dict[str, int]]]]
+
+
+@dataclass(frozen=True)
+class LLMCompletion:
+    """Completion text plus service-observed provider provenance."""
+
+    text: str
+    provider: str
+    model: str
+    fallback_used: bool
+    cached: bool
 
 
 class LLMClient:
@@ -241,14 +253,38 @@ class LLMClient:
         trigger_source: str = "unknown",
         system_run_id: str | None = None,
         tenant_id: str = "default",
+        allow_cache: bool = True,
     ) -> str:
+        result = await self.complete_with_provenance(
+            system_prompt,
+            user_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            operation=operation,
+            trigger_source=trigger_source,
+            system_run_id=system_run_id,
+            tenant_id=tenant_id,
+            allow_cache=allow_cache,
+        )
+        return result.text
+
+    async def complete_with_provenance(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.3,
+        operation: str = "complete",
+        trigger_source: str = "unknown",
+        system_run_id: str | None = None,
+        tenant_id: str = "default",
+        allow_cache: bool = True,
+    ) -> LLMCompletion:
         chain = self._provider_chain()
         if not chain:
             # No provider configured at all.
             llm_errors_total.labels(provider="none", error_type="auth").inc()
-            llm_requests_total.labels(
-                provider="none", operation=operation, status="failure"
-            ).inc()
+            llm_requests_total.labels(provider="none", operation=operation, status="failure").inc()
             raise LLMError(
                 f"LLM provider '{self.primary_provider}' is not configured. "
                 "Set the appropriate API key."
@@ -259,7 +295,7 @@ class LLMClient:
         # Only cache when temperature is low (intent is deterministic) and
         # the cache is wired up.
         cache_eligible = (
-            self._cache is not None and temperature <= CACHE_TEMPERATURE_CEILING
+            allow_cache and self._cache is not None and temperature <= CACHE_TEMPERATURE_CEILING
         )
         cache_key: str | None = None
         if cache_eligible:
@@ -274,23 +310,30 @@ class LLMClient:
             cached_entry = await self._cache.get_entry(cache_key)  # type: ignore[union-attr]
             if cached_entry is not None:
                 cached, cached_usage = cached_entry
-                llm_cache_hits_total.labels(
-                    provider=chain[0], operation=operation
-                ).inc()
+                llm_cache_hits_total.labels(provider=chain[0], operation=operation).inc()
                 logger.info(
                     "llm_cache_hit",
                     provider=chain[0],
                     operation=operation,
                 )
                 self._emit_spend(
-                    provider=chain[0], model=self.settings.model_for(chain[0]), operation=operation,
-                    usage=cached_usage or {}, cached=True, trigger_source=trigger_source,
-                    system_run_id=system_run_id, tenant_id=tenant_id,
+                    provider=chain[0],
+                    model=self.settings.model_for(chain[0]),
+                    operation=operation,
+                    usage=cached_usage or {},
+                    cached=True,
+                    trigger_source=trigger_source,
+                    system_run_id=system_run_id,
+                    tenant_id=tenant_id,
                 )
-                return cached
-            llm_cache_misses_total.labels(
-                provider=chain[0], operation=operation
-            ).inc()
+                return LLMCompletion(
+                    text=cached,
+                    provider=chain[0],
+                    model=self.settings.model_for(chain[0]),
+                    fallback_used=False,
+                    cached=True,
+                )
+            llm_cache_misses_total.labels(provider=chain[0], operation=operation).inc()
 
         last_error: LLMError | None = None
         winner: str | None = None
@@ -330,11 +373,22 @@ class LLMClient:
                         cache_key, result, usage, self.settings.LLM_CACHE_TTL_SEC
                     )
                 self._emit_spend(
-                    provider=provider, model=self.settings.model_for(provider), operation=operation,
-                    usage=usage, cached=False, trigger_source=trigger_source,
-                    system_run_id=system_run_id, tenant_id=tenant_id,
+                    provider=provider,
+                    model=self.settings.model_for(provider),
+                    operation=operation,
+                    usage=usage,
+                    cached=False,
+                    trigger_source=trigger_source,
+                    system_run_id=system_run_id,
+                    tenant_id=tenant_id,
                 )
-                return result
+                return LLMCompletion(
+                    text=result,
+                    provider=provider,
+                    model=self.settings.model_for(provider),
+                    fallback_used=idx > 0,
+                    cached=False,
+                )
             except LLMError as exc:
                 last_error = exc
                 continue
@@ -382,15 +436,13 @@ class LLMClient:
                 else:
                     async with self._admission.acquire("llm_sync"):
                         async with asyncio.timeout(remaining):
-                            result = await call(
-                                system_prompt, user_prompt, max_tokens, temperature
-                            )
+                            result = await call(system_prompt, user_prompt, max_tokens, temperature)
                 llm_attempts_total.labels(
                     provider=provider, operation=operation, status="success"
                 ).inc()
-                llm_request_duration.labels(
-                    provider=provider, operation=operation
-                ).observe(time.perf_counter() - start)
+                llm_request_duration.labels(provider=provider, operation=operation).observe(
+                    time.perf_counter() - start
+                )
                 llm_requests_total.labels(
                     provider=provider, operation=operation, status="success"
                 ).inc()
@@ -401,9 +453,7 @@ class LLMClient:
                 llm_requests_total.labels(
                     provider=provider, operation=operation, status="failure"
                 ).inc()
-                llm_errors_total.labels(
-                    provider=provider, error_type="empty_response"
-                ).inc()
+                llm_errors_total.labels(provider=provider, error_type="empty_response").inc()
                 llm_attempts_total.labels(
                     provider=provider, operation=operation, status="failure"
                 ).inc()
@@ -483,11 +533,18 @@ class LLMClient:
         if self._spend_meter is None:
             return
         event: dict[str, Any] = {
-            "event_id": str(uuid4()), "spend_class": "llm", "operation": operation,
-            "provider": provider, "model": model, "units": usage, "cached": cached,
-            "estimated": not bool(usage), "avoided_cost_estimated": cached and not bool(usage),
+            "event_id": str(uuid4()),
+            "spend_class": "llm",
+            "operation": operation,
+            "provider": provider,
+            "model": model,
+            "units": usage,
+            "cached": cached,
+            "estimated": not bool(usage),
+            "avoided_cost_estimated": cached and not bool(usage),
             "trigger_source": trigger_source,
-            "system_run_id": system_run_id or "", "tenant_id": tenant_id,
+            "system_run_id": system_run_id or "",
+            "tenant_id": tenant_id,
             "source_service": "enrichment-service",
         }
         self._spend_meter.enqueue(event)
@@ -591,9 +648,7 @@ class LLMClient:
         model_name = (model or "").lower()
         if any(tag in model_name for tag in ("2.5", "3.", "3-", "flash-latest", "pro-latest")):
             try:
-                config_kwargs["thinking_config"] = types.ThinkingConfig(
-                    thinking_budget=0
-                )
+                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
             except AttributeError:
                 pass
 
@@ -601,9 +656,7 @@ class LLMClient:
         rid = current_request_id()
         if rid:
             try:
-                config_kwargs["http_options"] = types.HttpOptions(
-                    headers={"X-Request-ID": rid}
-                )
+                config_kwargs["http_options"] = types.HttpOptions(headers={"X-Request-ID": rid})
             except (AttributeError, TypeError):
                 pass
 

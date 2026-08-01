@@ -34,6 +34,7 @@ from src.llm.routes import (
     topic_label,
     translate,
 )
+from src.operator.routes import reason as operator_reason
 from src.retrieval.clients.slide_cache import SlideCache
 from src.retrieval.models.manager import ModelManager
 from src.retrieval.routes import embed, feed_news, related, rerank
@@ -199,6 +200,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(topic_digest.router, prefix="/v1")
         app.include_router(chapters.router, prefix="/v1")
         app.include_router(chapter_proposal.router, prefix="/v1")
+        app.include_router(operator_reason.router, prefix="/v1/operator")
         app.include_router(admin.router, prefix="/v1")
 
     for exc_class in (
