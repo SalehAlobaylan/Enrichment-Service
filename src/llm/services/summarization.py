@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 def _strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
-        text = text[text.index("\n") + 1:] if "\n" in text else text[3:]
+        text = text[text.index("\n") + 1 :] if "\n" in text else text[3:]
     if text.endswith("```"):
         text = text[: text.rfind("```")]
     return text.strip()
@@ -39,6 +39,7 @@ class SummarizationService:
         max_length: int = 200,
         style: str = "brief",
         content_id: str | None = None,
+        artifact_recovery: dict[str, str] | None = None,
     ) -> SummarizeResponse:
         user_prompt = (
             f"Summarize the following text in approximately {max_length} words. "
@@ -59,7 +60,7 @@ class SummarizationService:
         )
 
         if content_id:
-            await self._write_back(content_id, response)
+            await self._write_back(content_id, response, artifact_recovery)
 
         return response
 
@@ -82,7 +83,12 @@ class SummarizationService:
 
         return parsed
 
-    async def _write_back(self, content_id: str, result: SummarizeResponse) -> None:
+    async def _write_back(
+        self,
+        content_id: str,
+        result: SummarizeResponse,
+        artifact_recovery: dict[str, str] | None = None,
+    ) -> None:
         try:
             await self.cms_client.merge_enrichment_metadata(
                 content_id,
@@ -90,6 +96,7 @@ class SummarizationService:
                     "summary": result.summary,
                     "key_points": result.key_points,
                 },
+                artifact_recovery=artifact_recovery,
             )
             result.write_back_status = "persisted"
             logger.info("summary_writeback_complete", content_id=content_id)

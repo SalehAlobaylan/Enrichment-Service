@@ -2,6 +2,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.common.schemas.artifact_recovery import ArtifactRecoveryCorrelation
+from src.common.schemas.pipeline_repair import PipelineRepairCorrelation
+
 MAX_EMBED_BATCH = 32
 MAX_EMBED_TEXT_CHARS = 12_000
 
@@ -22,6 +25,10 @@ class EmbedRequest(BaseModel):
     # Legacy compatibility flag from the BGE-M3 sparse era. Qwen is dense-only,
     # so this is currently a no-op and sparse write-back remains None.
     extract_sparse: bool = False
+    artifact_recovery: ArtifactRecoveryCorrelation | None = None
+    # Opaque, CMS-issued fence for the one text_embedding Pipeline-repair
+    # effect. It is never a user-facing item/stage selector.
+    pipeline_repair: PipelineRepairCorrelation | None = None
 
     @model_validator(mode="after")
     def _validate_batch(self) -> "EmbedRequest":
@@ -34,6 +41,16 @@ class EmbedRequest(BaseModel):
                 not content_id.strip() for content_id in self.content_ids
             ):
                 raise ValueError("content_ids must be non-empty and unique")
+        if self.artifact_recovery is not None and (
+            self.content_ids is None or len(self.content_ids) != 1
+        ):
+            raise ValueError("artifact recovery requires exactly one content_id")
+        if self.pipeline_repair is not None and (
+            self.content_ids is None or len(self.content_ids) != 1
+        ):
+            raise ValueError("pipeline repair requires exactly one content_id")
+        if self.artifact_recovery is not None and self.pipeline_repair is not None:
+            raise ValueError("artifact recovery and pipeline repair cannot share one write-back")
         return self
 
 

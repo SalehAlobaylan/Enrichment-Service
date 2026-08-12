@@ -27,9 +27,9 @@ def test_build_url_avoids_duplicate_internal_prefix() -> None:
 
 
 @respx.mock
-async def test_health_check_uses_public_cms_health_endpoint() -> None:
+async def test_health_check_uses_public_cms_liveness_endpoint() -> None:
     client = CMSClient(make_settings("http://localhost:8080/internal"))
-    route = respx.get("http://localhost:8080/health").mock(
+    route = respx.get("http://localhost:8080/live").mock(
         return_value=Response(200, json={"status": "ok"})
     )
 
@@ -47,7 +47,7 @@ async def test_health_check_works_without_service_token() -> None:
         SERVICE_AUTH_TOKEN="enrichment-token",
     )
     client = CMSClient(settings)
-    route = respx.get("http://localhost:8080/health").mock(
+    route = respx.get("http://localhost:8080/live").mock(
         return_value=Response(200, json={"status": "ok"})
     )
 

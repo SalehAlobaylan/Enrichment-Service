@@ -23,6 +23,9 @@ async def summarize(body: SummarizeRequest, request: Request) -> SummarizeRespon
             max_length=body.max_length,
             style=body.style,
             content_id=body.content_id,
+            artifact_recovery=body.artifact_recovery.model_dump()
+            if body.artifact_recovery
+            else None,
         )
     except LLMError:
         raise

@@ -61,7 +61,10 @@ class CMSClient:
 
     async def health_check(self) -> bool:
         try:
-            resp = await self.client.get(f"{self.public_base_url}/health")
+            # CMS /health is aggregate operational readiness and includes this
+            # service. Use its dependency-independent liveness probe here so a
+            # temporary readiness fault cannot form a circular outage.
+            resp = await self.client.get(f"{self.public_base_url}/live")
             return resp.status_code == 200
         except httpx.HTTPError:
             return False
@@ -75,6 +78,8 @@ class CMSClient:
         model: str | None = None,
         space_id: str | None = None,
         producer_id: str | None = None,
+        artifact_recovery: dict[str, str] | None = None,
+        pipeline_repair: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Write text embedding to CMS.
 
@@ -100,6 +105,10 @@ class CMSClient:
             payload["space_id"] = space_id
         if producer_id:
             payload["producer_id"] = producer_id
+        if artifact_recovery:
+            payload["artifact_recovery"] = artifact_recovery
+        if pipeline_repair:
+            payload["pipeline_repair"] = pipeline_repair
         return await self._request(
             "PATCH",
             f"/internal/content-items/{content_id}/embedding",
@@ -116,13 +125,19 @@ class CMSClient:
         )
 
     async def merge_enrichment_metadata(
-        self, content_id: str, fields: dict[str, Any]
+        self,
+        content_id: str,
+        fields: dict[str, Any],
+        artifact_recovery: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Persist only the fields Enrichment owns, preserving all other metadata."""
         return await self._request(
             "PATCH",
             f"/internal/content-items/{content_id}/enrichment-metadata",
-            json={"fields": fields},
+            json={
+                "fields": fields,
+                **({"artifact_recovery": artifact_recovery} if artifact_recovery else {}),
+            },
             metric_label="merge_enrichment_metadata",
         )
 
@@ -133,7 +148,9 @@ class CMSClient:
         into a user-visible failure.
         """
         await self._request(
-            "POST", "/internal/ai-spend/events", json={"events": events},
+            "POST",
+            "/internal/ai-spend/events",
+            json={"events": events},
             metric_label="emit_ai_spend_events",
             circuit_breaker=self.telemetry_circuit_breaker,
         )

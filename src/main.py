@@ -18,7 +18,7 @@ from src.common.middleware.error_handler import (
 )
 from src.common.middleware.logging import LoggingMiddleware
 from src.common.middleware.request_id import RequestIDMiddleware
-from src.common.routes import admin, health
+from src.common.routes import admin, artifact_recovery, health
 from src.common.utils.logging import get_logger, setup_logging
 from src.common.workload_admission import WorkloadAdmission, WorkloadExecutors
 from src.extraction.routes import extract
@@ -202,6 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.include_router(chapter_proposal.router, prefix="/v1")
         app.include_router(operator_reason.router, prefix="/v1/operator")
         app.include_router(admin.router, prefix="/v1")
+        app.include_router(artifact_recovery.router, prefix="/internal/artifact-recovery")
 
     for exc_class in (
         CircuitOpenError,

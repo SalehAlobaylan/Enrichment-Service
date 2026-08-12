@@ -44,6 +44,12 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
                 content_ids=body.content_ids,
                 extract_tags=body.extract_tags,
                 extract_sparse=body.extract_sparse,
+                artifact_recovery=body.artifact_recovery.model_dump()
+                if body.artifact_recovery
+                else None,
+                pipeline_repair=body.pipeline_repair.model_dump()
+                if body.pipeline_repair
+                else None,
             )
     except (EmbeddingError, WorkloadOverloadedError):
         raise

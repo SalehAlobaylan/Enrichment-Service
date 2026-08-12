@@ -395,6 +395,16 @@ class LLMClient:
 
         # Every provider exhausted.
         assert last_error is not None
+        # Keep the failure diagnosable without logging provider payloads,
+        # prompts, or SDK exception text (which can contain request metadata).
+        # The route will still return the bounded LLM_ERROR envelope and CMS
+        # will retain its deterministic evidence-only fallback.
+        logger.error(
+            "llm_all_providers_failed",
+            operation=operation,
+            providers=chain,
+            error_class=type(last_error).__name__,
+        )
         raise last_error
 
     @staticmethod

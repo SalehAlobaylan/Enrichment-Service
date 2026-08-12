@@ -8,6 +8,7 @@ import re
 from pydantic import ValidationError
 
 from src.common.middleware.error_handler import LLMError
+from src.common.utils.logging import get_logger
 from src.llm.clients.llm import LLMClient
 from src.operator.schemas import (
     CONTRACT_VERSION,
@@ -21,6 +22,8 @@ _BEARER = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+\-/=]{8,}")
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(?:api[_ -]?key|token|secret|password|authorization|cookie)\s*[:=]\s*[^\s,;]+"
 )
+
+logger = get_logger(__name__)
 
 SYSTEM_PROMPT = """You are Wahb Operator's reasoning component.
 You receive a CMS-validated decision packet, not authority to browse, query, plan,
@@ -108,5 +111,12 @@ class OperatorReasoningService:
             )
             response.validate_against_request(request)
         except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+            # Keep malformed model output observable without logging the
+            # prompt, packet, or raw provider response. CMS will degrade to
+            # its evidence-only response, so this is diagnostic only.
+            logger.warning(
+                "operator_reasoning_invalid_response",
+                error_class=type(exc).__name__,
+            )
             raise LLMError("Operator reasoning returned an invalid structured response") from exc
         return response

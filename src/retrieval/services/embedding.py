@@ -51,6 +51,8 @@ class EmbeddingService:
         content_ids: list[str] | None = None,
         extract_tags: bool = False,
         extract_sparse: bool = False,
+        artifact_recovery: dict[str, str] | None = None,
+        pipeline_repair: dict[str, str] | None = None,
     ) -> EmbedResponse:
         # Run embedding compute and tag-extraction concurrently when tagging
         # is requested — embedder is CPU, tagging is network-bound on the LLM.
@@ -97,6 +99,8 @@ class EmbeddingService:
                 sparse_maps,
                 topic_tags,
                 descriptor,
+                artifact_recovery,
+                pipeline_repair,
             )
             response.write_back_status = status
             response.write_back_error = error
@@ -125,6 +129,8 @@ class EmbeddingService:
         sparse_maps: list[dict[str, float]] | None,
         topic_tags: list[str] | None = None,
         descriptor: dict | None = None,
+        artifact_recovery: dict[str, str] | None = None,
+        pipeline_repair: dict[str, str] | None = None,
     ) -> tuple[str, str | None]:
         """Write each (content_id, vector, [sparse]) to CMS.
 
@@ -158,9 +164,7 @@ class EmbeddingService:
 
         semaphore = asyncio.Semaphore(WRITEBACK_CONCURRENCY)
 
-        async def write_one(
-            i: int, content_id: str, vector: list[float]
-        ) -> str | None:
+        async def write_one(i: int, content_id: str, vector: list[float]) -> str | None:
             sparse = sparse_maps[i] if sparse_maps else None
             try:
                 async with semaphore:
@@ -172,6 +176,8 @@ class EmbeddingService:
                         model=self.embedder.model_name,
                         space_id=descriptor.get("space_id") if descriptor else None,
                         producer_id=descriptor.get("producer_id") if descriptor else None,
+                        artifact_recovery=artifact_recovery,
+                        pipeline_repair=pipeline_repair,
                     )
                 logger.info(
                     "embedding_writeback_complete",
