@@ -53,6 +53,7 @@ class EmbeddingService:
         extract_sparse: bool = False,
         artifact_recovery: dict[str, str] | None = None,
         pipeline_repair: dict[str, str] | None = None,
+        content_stage: dict[str, str] | None = None,
     ) -> EmbedResponse:
         # Run embedding compute and tag-extraction concurrently when tagging
         # is requested — embedder is CPU, tagging is network-bound on the LLM.
@@ -101,6 +102,7 @@ class EmbeddingService:
                 descriptor,
                 artifact_recovery,
                 pipeline_repair,
+                content_stage,
             )
             response.write_back_status = status
             response.write_back_error = error
@@ -131,6 +133,7 @@ class EmbeddingService:
         descriptor: dict | None = None,
         artifact_recovery: dict[str, str] | None = None,
         pipeline_repair: dict[str, str] | None = None,
+        content_stage: dict[str, str] | None = None,
     ) -> tuple[str, str | None]:
         """Write each (content_id, vector, [sparse]) to CMS.
 
@@ -178,6 +181,7 @@ class EmbeddingService:
                         producer_id=descriptor.get("producer_id") if descriptor else None,
                         artifact_recovery=artifact_recovery,
                         pipeline_repair=pipeline_repair,
+                        content_stage=content_stage,
                     )
                 logger.info(
                     "embedding_writeback_complete",

@@ -4,6 +4,7 @@ from src.common.auth.service_auth import verify_service_token
 from src.common.middleware.error_handler import LLMError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import summarizations_total
+from src.common.workload_admission import WorkloadOverloadedError
 from src.llm.schemas.summarize import SummarizeRequest, SummarizeResponse
 from src.llm.services.summarization import SummarizationService
 
@@ -18,16 +19,20 @@ async def summarize(body: SummarizeRequest, request: Request) -> SummarizeRespon
     service = SummarizationService(llm_client, cms_client)
 
     try:
-        return await service.summarize(
-            text=body.text,
-            max_length=body.max_length,
-            style=body.style,
-            content_id=body.content_id,
-            artifact_recovery=body.artifact_recovery.model_dump()
-            if body.artifact_recovery
-            else None,
-        )
-    except LLMError:
+        async with request.app.state.workload_admission.acquire("llm_sync"):
+            return await service.summarize(
+                text=body.text,
+                max_length=body.max_length,
+                style=body.style,
+                content_id=body.content_id,
+                artifact_recovery=body.artifact_recovery.model_dump()
+                if body.artifact_recovery
+                else None,
+                content_stage=body.content_stage.model_dump()
+                if body.content_stage
+                else None,
+            )
+    except (LLMError, WorkloadOverloadedError):
         raise
     except Exception as exc:
         summarizations_total.labels(status="failure").inc()

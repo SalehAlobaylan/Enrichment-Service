@@ -51,6 +51,7 @@ async def global_error_handler(request: Request, exc: Exception) -> JSONResponse
                 "error_code": "WORKLOAD_OVERLOADED",
                 "retryable": True,
                 "retry_after_seconds": RETRY_AFTER_SEC,
+                "lane": exc.lane,
                 "request_id": request_id,
             },
         )

@@ -14,6 +14,15 @@ MAX_EMBED_TEXT_CHARS = 12_000
 WriteBackStatus = Literal["not_attempted", "ok", "failed"]
 
 
+class ContentStageCorrelation(BaseModel):
+    request_id: str = Field(..., min_length=36, max_length=36)
+    attempt_id: str = Field(..., min_length=36, max_length=36)
+    claim_token: str = Field(..., min_length=36, max_length=36)
+    fence_token: str = Field(..., min_length=36, max_length=36)
+    input_fingerprint: str = Field(..., pattern=r"^[a-f0-9]{64}$")
+    producer_event_id: str = Field(..., min_length=36, max_length=36)
+
+
 class EmbedRequest(BaseModel):
     texts: list[str] = Field(..., min_length=1, max_length=MAX_EMBED_BATCH)
     content_ids: list[str] | None = Field(default=None, max_length=MAX_EMBED_BATCH)
@@ -29,6 +38,8 @@ class EmbedRequest(BaseModel):
     # Opaque, CMS-issued fence for the one text_embedding Pipeline-repair
     # effect. It is never a user-facing item/stage selector.
     pipeline_repair: PipelineRepairCorrelation | None = None
+    lane: Literal["news", "pods"] | None = None
+    content_stage: ContentStageCorrelation | None = None
 
     @model_validator(mode="after")
     def _validate_batch(self) -> "EmbedRequest":
@@ -51,6 +62,16 @@ class EmbedRequest(BaseModel):
             raise ValueError("pipeline repair requires exactly one content_id")
         if self.artifact_recovery is not None and self.pipeline_repair is not None:
             raise ValueError("artifact recovery and pipeline repair cannot share one write-back")
+        if self.content_stage is not None and (
+            self.content_ids is None or len(self.content_ids) != 1 or self.lane is None
+        ):
+            raise ValueError("content stage writeback requires one content_id and a lane")
+        if self.lane is not None and self.content_stage is None:
+            raise ValueError("reserved embedding lanes require CMS content-stage correlation")
+        if self.content_stage is not None and (
+            self.artifact_recovery is not None or self.pipeline_repair is not None
+        ):
+            raise ValueError("normal stage, recovery, and repair correlations are exclusive")
         return self
 
 

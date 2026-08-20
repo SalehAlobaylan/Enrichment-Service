@@ -14,6 +14,11 @@ from src.retrieval.routes.embed import embed
 from src.retrieval.schemas.embed import EmbedRequest
 
 
+def test_reserved_lane_requires_durable_stage_correlation() -> None:
+    with pytest.raises(ValueError, match="reserved embedding lanes"):
+        EmbedRequest(texts=["bounded"], content_ids=["item-1"], lane="news")
+
+
 @pytest.mark.asyncio
 async def test_saturated_workload_rejects_without_starting_extra_work(
     monkeypatch: pytest.MonkeyPatch,
@@ -41,7 +46,7 @@ async def test_saturated_workload_rejects_without_starting_extra_work(
 async def test_embed_route_preserves_retryable_overload() -> None:
     class RejectingAdmission:
         @asynccontextmanager
-        async def acquire(self, workload: str):
+        async def acquire(self, workload: str, lane: str | None = None):
             raise WorkloadOverloadedError(workload)
             yield
 
@@ -80,6 +85,36 @@ async def test_cancellation_releases_capacity() -> None:
         await task
     async with admission.acquire("rerank"):
         pass
+
+
+@pytest.mark.asyncio
+async def test_embedding_lanes_preserve_one_slot_for_waiting_other_lane() -> None:
+    admission = WorkloadAdmission({"embedding": 2})
+    news_release = asyncio.Event()
+    news_started = [asyncio.Event(), asyncio.Event()]
+    pods_started = asyncio.Event()
+
+    async def hold_news(index: int) -> None:
+        async with admission.acquire("embedding", lane="news"):
+            news_started[index].set()
+            await news_release.wait()
+
+    first = asyncio.create_task(hold_news(0))
+    await news_started[0].wait()
+    second = asyncio.create_task(hold_news(1))
+    await news_started[1].wait()
+
+    async def enter_pods() -> None:
+        async with admission.acquire("embedding", lane="pods"):
+            pods_started.set()
+
+    pods = asyncio.create_task(enter_pods())
+    await asyncio.sleep(0.005)
+    assert not pods_started.is_set()
+
+    news_release.set()
+    await asyncio.wait_for(pods_started.wait(), timeout=0.1)
+    await asyncio.gather(first, second, pods)
 
 
 @pytest.mark.asyncio

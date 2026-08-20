@@ -15,6 +15,7 @@ from src.common.utils.metrics import workload_admission_total, workload_in_fligh
 # a future CMS-backed capacity policy rather than proliferating process config.
 WORKLOAD_CAPACITY = {
     "embedding": 2,
+    "embedding_query": 1,
     "rerank": 1,
     "extraction": 4,
     "llm_sync": 4,
@@ -25,9 +26,50 @@ T = TypeVar("T")
 
 
 class WorkloadOverloadedError(Exception):
-    def __init__(self, workload: str) -> None:
+    def __init__(self, workload: str, lane: str | None = None) -> None:
         self.workload = workload
-        super().__init__(f"{workload} workload is at capacity")
+        self.lane = lane
+        super().__init__(f"{workload}{':' + lane if lane else ''} workload is at capacity")
+
+
+class EmbeddingLaneAdmission:
+    """Two-slot scheduler with one non-preemptive reserved floor per lane."""
+
+    def __init__(self, capacity: int = 2) -> None:
+        self.capacity = max(1, capacity)
+        self._condition = asyncio.Condition()
+        self._active = {"news": 0, "pods": 0, "legacy": 0}
+        self._waiting = {"news": 0, "pods": 0, "legacy": 0}
+
+    def _can_enter(self, lane: str) -> bool:
+        total = sum(self._active.values())
+        if total >= self.capacity:
+            return False
+        if lane == "legacy":
+            return self._waiting["news"] == 0 and self._waiting["pods"] == 0
+        other = "pods" if lane == "news" else "news"
+        if self._active[lane] == 0:
+            return True
+        return self._waiting[other] == 0
+
+    async def enter(self, lane: str) -> None:
+        if lane not in self._active:
+            raise ValueError("embedding lane must be news or pods")
+        async with self._condition:
+            self._waiting[lane] += 1
+            try:
+                await asyncio.wait_for(
+                    self._condition.wait_for(lambda: self._can_enter(lane)),
+                    timeout=ADMISSION_WAIT_SEC,
+                )
+                self._active[lane] += 1
+            finally:
+                self._waiting[lane] -= 1
+
+    async def leave(self, lane: str) -> None:
+        async with self._condition:
+            self._active[lane] -= 1
+            self._condition.notify_all()
 
 
 class WorkloadAdmission:
@@ -36,23 +78,46 @@ class WorkloadAdmission:
         self._semaphores = {
             workload: asyncio.BoundedSemaphore(capacity)
             for workload, capacity in configured.items()
+            if workload != "embedding"
         }
+        self._embedding = EmbeddingLaneAdmission(configured.get("embedding", 2))
 
     @asynccontextmanager
-    async def acquire(self, workload: str) -> AsyncIterator[None]:
+    async def acquire(self, workload: str, lane: str | None = None) -> AsyncIterator[None]:
+        metric_workload = f"{workload}_{lane}" if lane else workload
+        if workload == "embedding":
+            embedding_lane = lane or "legacy"
+            try:
+                await self._embedding.enter(embedding_lane)
+            except TimeoutError as exc:
+                workload_admission_total.labels(
+                    workload=metric_workload, outcome="rejected"
+                ).inc()
+                raise WorkloadOverloadedError(workload, lane) from exc
+            workload_admission_total.labels(
+                workload=metric_workload, outcome="accepted"
+            ).inc()
+            workload_in_flight.labels(workload=metric_workload).inc()
+            try:
+                yield
+            finally:
+                workload_in_flight.labels(workload=metric_workload).dec()
+                await self._embedding.leave(embedding_lane)
+            return
+
         semaphore = self._semaphores[workload]
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout=ADMISSION_WAIT_SEC)
         except TimeoutError as exc:
-            workload_admission_total.labels(workload=workload, outcome="rejected").inc()
-            raise WorkloadOverloadedError(workload) from exc
+            workload_admission_total.labels(workload=metric_workload, outcome="rejected").inc()
+            raise WorkloadOverloadedError(workload, lane) from exc
 
-        workload_admission_total.labels(workload=workload, outcome="accepted").inc()
-        workload_in_flight.labels(workload=workload).inc()
+        workload_admission_total.labels(workload=metric_workload, outcome="accepted").inc()
+        workload_in_flight.labels(workload=metric_workload).inc()
         try:
             yield
         finally:
-            workload_in_flight.labels(workload=workload).dec()
+            workload_in_flight.labels(workload=metric_workload).dec()
             semaphore.release()
 
 

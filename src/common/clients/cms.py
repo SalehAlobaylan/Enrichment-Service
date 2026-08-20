@@ -79,6 +79,7 @@ class CMSClient:
         space_id: str | None = None,
         producer_id: str | None = None,
         artifact_recovery: dict[str, str] | None = None,
+        content_stage: dict[str, str] | None = None,
         pipeline_repair: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Write text embedding to CMS.
@@ -109,6 +110,8 @@ class CMSClient:
             payload["artifact_recovery"] = artifact_recovery
         if pipeline_repair:
             payload["pipeline_repair"] = pipeline_repair
+        if content_stage:
+            payload["content_stage"] = content_stage
         return await self._request(
             "PATCH",
             f"/internal/content-items/{content_id}/embedding",
@@ -129,6 +132,7 @@ class CMSClient:
         content_id: str,
         fields: dict[str, Any],
         artifact_recovery: dict[str, str] | None = None,
+        content_stage: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Persist only the fields Enrichment owns, preserving all other metadata."""
         return await self._request(
@@ -137,6 +141,7 @@ class CMSClient:
             json={
                 "fields": fields,
                 **({"artifact_recovery": artifact_recovery} if artifact_recovery else {}),
+                **({"content_stage": content_stage} if content_stage else {}),
             },
             metric_label="merge_enrichment_metadata",
         )

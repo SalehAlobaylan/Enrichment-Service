@@ -40,6 +40,7 @@ class SummarizationService:
         style: str = "brief",
         content_id: str | None = None,
         artifact_recovery: dict[str, str] | None = None,
+        content_stage: dict[str, str] | None = None,
     ) -> SummarizeResponse:
         user_prompt = (
             f"Summarize the following text in approximately {max_length} words. "
@@ -60,7 +61,7 @@ class SummarizationService:
         )
 
         if content_id:
-            await self._write_back(content_id, response, artifact_recovery)
+            await self._write_back(content_id, response, artifact_recovery, content_stage)
 
         return response
 
@@ -88,6 +89,7 @@ class SummarizationService:
         content_id: str,
         result: SummarizeResponse,
         artifact_recovery: dict[str, str] | None = None,
+        content_stage: dict[str, str] | None = None,
     ) -> None:
         try:
             await self.cms_client.merge_enrichment_metadata(
@@ -97,6 +99,7 @@ class SummarizationService:
                     "key_points": result.key_points,
                 },
                 artifact_recovery=artifact_recovery,
+                content_stage=content_stage,
             )
             result.write_back_status = "persisted"
             logger.info("summary_writeback_complete", content_id=content_id)

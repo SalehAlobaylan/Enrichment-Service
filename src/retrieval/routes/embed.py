@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 
 from src.common.auth.service_auth import verify_service_token
@@ -38,19 +40,28 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
         raise EmbeddingError("content_ids length must match texts length")
 
     try:
-        async with request.app.state.workload_admission.acquire("embedding"):
-            return await service.embed(
-                body.texts,
-                content_ids=body.content_ids,
-                extract_tags=body.extract_tags,
-                extract_sparse=body.extract_sparse,
-                artifact_recovery=body.artifact_recovery.model_dump()
-                if body.artifact_recovery
-                else None,
-                pipeline_repair=body.pipeline_repair.model_dump()
-                if body.pipeline_repair
-                else None,
-            )
+        admission = (
+            request.app.state.workload_admission.acquire("embedding", lane=body.lane)
+            if body.lane
+            else request.app.state.workload_admission.acquire("embedding")
+        )
+        async with admission:
+            async with asyncio.timeout(60):
+                return await service.embed(
+                    body.texts,
+                    content_ids=body.content_ids,
+                    extract_tags=body.extract_tags,
+                    extract_sparse=body.extract_sparse,
+                    artifact_recovery=body.artifact_recovery.model_dump()
+                    if body.artifact_recovery
+                    else None,
+                    pipeline_repair=body.pipeline_repair.model_dump()
+                    if body.pipeline_repair
+                    else None,
+                    content_stage=body.content_stage.model_dump()
+                    if body.content_stage
+                    else None,
+                )
     except (EmbeddingError, WorkloadOverloadedError):
         raise
     except Exception as exc:
@@ -73,7 +84,7 @@ async def embed_query(body: EmbedQueryRequest, request: Request) -> EmbedQueryRe
         raise EmbeddingError("Embedding model is not loaded")
 
     try:
-        async with request.app.state.workload_admission.acquire("embedding"):
+        async with request.app.state.workload_admission.acquire("embedding_query"):
             return await service.embed_query(body.text)
     except (EmbeddingError, WorkloadOverloadedError):
         raise
