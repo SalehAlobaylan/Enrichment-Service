@@ -18,6 +18,9 @@ from src.common.middleware.error_handler import (
 )
 from src.common.middleware.logging import LoggingMiddleware
 from src.common.middleware.request_id import RequestIDMiddleware
+from src.common.migration_control import MigrationFenceMiddleware
+from src.common.migration_control import owner as migration_owner
+from src.common.migration_control import router as migration_router
 from src.common.routes import admin, artifact_recovery, health
 from src.common.utils.logging import get_logger, setup_logging
 from src.common.workload_admission import WorkloadAdmission, WorkloadExecutors
@@ -54,10 +57,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if config_errors:
         for err in config_errors:
             logger.error("config_invalid", error=err)
-        raise RuntimeError(
-            "Refusing to start: invalid configuration — "
-            + "; ".join(config_errors)
+        raise RuntimeError("Refusing to start: invalid configuration — " + "; ".join(config_errors))
+
+    migration_redis = None
+    try:
+        from redis.asyncio import Redis
+
+        migration_redis = Redis.from_url(
+            settings.REDIS_URL, db=settings.LLM_CACHE_DB, decode_responses=False
         )
+        await migration_redis.ping()
+        await migration_owner.restore(migration_redis)
+    except Exception as exc:
+        logger.error("migration_owner_store_unavailable", reason=str(exc))
+        if migration_redis is not None:
+            await migration_redis.aclose()
+        migration_redis = None
 
     model_manager = ModelManager(settings)
     if model_manager.role == "reranker":
@@ -67,6 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.cms_client = None
         app.state.llm_client = None
         app.state.redis_llm = None
+        app.state.migration_redis = migration_redis
         app.state.slide_cache = None
         app.state.workload_admission = WorkloadAdmission()
         app.state.workload_executors = WorkloadExecutors()
@@ -74,6 +90,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         yield
         model_manager.close()
         app.state.workload_executors.close()
+        if migration_redis is not None:
+            await migration_redis.aclose()
         logger.info("shutdown_complete")
         return
 
@@ -85,14 +103,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     redis_llm = None
     if settings.LLM_CACHE_ENABLED:
         try:
-            from redis.asyncio import Redis
-
-            redis_llm = Redis.from_url(
-                settings.REDIS_URL,
-                db=settings.LLM_CACHE_DB,
-                decode_responses=False,
-            )
-            await redis_llm.ping()
+            redis_llm = migration_redis
+            if redis_llm is None:
+                raise RuntimeError("Redis migration owner connection is unavailable")
             llm_cache = LLMCache(redis_llm, default_ttl_sec=settings.LLM_CACHE_TTL_SEC)
             logger.info(
                 "llm_cache_ready",
@@ -124,9 +137,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # above; FeedNewsService then always computes.
     slide_cache: SlideCache | None = None
     if settings.FEED_SLIDE_CACHE_ENABLED and redis_llm is not None:
-        slide_cache = SlideCache(
-            redis_llm, default_ttl_sec=settings.FEED_SLIDE_CACHE_TTL_SEC
-        )
+        slide_cache = SlideCache(redis_llm, default_ttl_sec=settings.FEED_SLIDE_CACHE_TTL_SEC)
         logger.info("slide_cache_ready", ttl_sec=settings.FEED_SLIDE_CACHE_TTL_SEC)
 
     await model_manager.warmup()
@@ -136,6 +147,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.cms_client = cms_client
     app.state.llm_client = llm_client
     app.state.redis_llm = redis_llm
+    app.state.migration_redis = migration_redis
     app.state.slide_cache = slide_cache
     app.state.workload_admission = workload_admission
     app.state.workload_executors = workload_executors
@@ -149,9 +161,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await cms_client.close()
     model_manager.close()
     workload_executors.close()
-    if redis_llm is not None:
+    if migration_redis is not None:
         try:
-            await redis_llm.aclose()
+            await migration_redis.aclose()
         except Exception:
             pass
     logger.info("shutdown_complete")
@@ -183,10 +195,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(MigrationFenceMiddleware)
     app.add_middleware(RequestBodyLimitMiddleware)
     Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
     app.include_router(health.router)
+    app.include_router(migration_router)
     app.include_router(rerank.router, prefix="/v1")
     if settings.ENRICHMENT_ROLE.strip().lower() != "reranker":
         app.include_router(embed.router, prefix="/v1")
