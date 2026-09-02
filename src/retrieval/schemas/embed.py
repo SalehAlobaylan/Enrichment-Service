@@ -90,8 +90,9 @@ class EmbedResponse(BaseModel):
     # the vector is still usable for nearest-neighbor lookups).
     write_back_status: WriteBackStatus = "not_attempted"
     write_back_error: str | None = None
-    # Populated when extract_tags=true. None when tagging wasn't requested or
-    # the text was too short / the LLM failed (best-effort).
+    # Populated when extract_tags=true for stateless callers. For content
+    # write-back requests, tags are persisted asynchronously after the required
+    # embedding receipt, so this may remain None even when extraction succeeds.
     tags: list[str] | None = None
     entities: dict[str, list[str]] | None = None
 

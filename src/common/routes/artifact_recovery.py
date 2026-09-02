@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.common.auth.service_auth import verify_service_token
 from src.common.middleware.error_handler import EmbeddingError, LLMError
-from src.common.schemas.artifact_recovery import ArtifactRecoveryCorrelation, UUID_PATTERN
+from src.common.schemas.artifact_recovery import UUID_PATTERN, ArtifactRecoveryCorrelation
 from src.llm.services.summarization import SummarizationService
 from src.retrieval.services.embedding import EmbeddingService
 
@@ -32,7 +32,9 @@ class ArtifactRecoveryResult(BaseModel):
 
 
 @router.post("/text-embedding", response_model=ArtifactRecoveryResult)
-async def recover_text_embedding(body: TextEmbeddingRecoveryRequest, request: Request) -> ArtifactRecoveryResult:
+async def recover_text_embedding(
+    body: TextEmbeddingRecoveryRequest, request: Request
+) -> ArtifactRecoveryResult:
     manager = request.app.state.model_manager
     if not manager.embedder.is_loaded:
         raise EmbeddingError("Embedding model is not loaded")
@@ -47,11 +49,15 @@ async def recover_text_embedding(body: TextEmbeddingRecoveryRequest, request: Re
             content_ids=[body.content_id],
             artifact_recovery=body.correlation.model_dump(),
         )
-    return ArtifactRecoveryResult(artifact="text_embedding", write_back_status=result.write_back_status)
+    return ArtifactRecoveryResult(
+        artifact="text_embedding", write_back_status=result.write_back_status
+    )
 
 
 @router.post("/llm-metadata", response_model=ArtifactRecoveryResult)
-async def recover_llm_metadata(body: LLMMetadataRecoveryRequest, request: Request) -> ArtifactRecoveryResult:
+async def recover_llm_metadata(
+    body: LLMMetadataRecoveryRequest, request: Request
+) -> ArtifactRecoveryResult:
     service = SummarizationService(request.app.state.llm_client, request.app.state.cms_client)
     try:
         result = await service.summarize(
@@ -63,4 +69,6 @@ async def recover_llm_metadata(body: LLMMetadataRecoveryRequest, request: Reques
         )
     except LLMError:
         raise
-    return ArtifactRecoveryResult(artifact="llm_metadata", write_back_status=result.write_back_status)
+    return ArtifactRecoveryResult(
+        artifact="llm_metadata", write_back_status=result.write_back_status
+    )

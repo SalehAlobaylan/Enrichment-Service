@@ -1,3 +1,7 @@
+import asyncio
+import os
+import resource
+import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -153,9 +157,42 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.workload_executors = workload_executors
     app.state.spend_meter = spend_meter
 
+    async def publish_lane_snapshot(lane: str) -> None:
+        """Publish a compact, current Enrichment view to CMS.
+
+        Aggregation owns queue depth; Enrichment owns admission and model
+        saturation. Keeping both in the CMS snapshot makes a green HTTP probe
+        distinguishable from a lane that is rejecting work locally.
+        """
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss_bytes = int(usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024)
+        await cms_client.put_pipeline_lane_snapshot(lane, {
+            "required_queue_depth": 0,
+            "optional_queue_depth": 0,
+            "required_oldest_age_seconds": 0,
+            "optional_oldest_age_seconds": 0,
+            "dlq_delta": 0,
+            "enrichment_counts": workload_admission.snapshot(lane),
+            "process_metrics": {"pid": os.getpid(), "max_rss_bytes": rss_bytes},
+            "resource_metrics": {"embedding_capacity": workload_admission.capacity("embedding")},
+        })
+
+    async def publish_lane_snapshots() -> None:
+        while True:
+            try:
+                for lane in ("news", "pods"):
+                    await publish_lane_snapshot(lane)
+            except Exception as exc:
+                logger.debug("pipeline_snapshot_deferred", reason=str(exc))
+            await asyncio.sleep(15)
+
+    app.state.pipeline_snapshot_task = asyncio.create_task(publish_lane_snapshots())
+
     logger.info("ready", models=model_manager.is_ready)
     yield
 
+    app.state.pipeline_snapshot_task.cancel()
+    await asyncio.gather(app.state.pipeline_snapshot_task, return_exceptions=True)
     await spend_meter.close()
     await llm_client.close()
     await cms_client.close()

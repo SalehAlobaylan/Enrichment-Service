@@ -19,12 +19,25 @@ def correlation() -> dict[str, str]:
 
 
 def test_owner_routes_accept_one_exact_typed_target() -> None:
-    request = TextEmbeddingRecoveryRequest(text="hello", content_id="55555555-5555-4555-8555-555555555555", correlation=correlation())
+    request = TextEmbeddingRecoveryRequest(
+        text="hello",
+        content_id="55555555-5555-4555-8555-555555555555",
+        correlation=correlation(),
+    )
     assert request.content_id.endswith("5555")
-    metadata = LLMMetadataRecoveryRequest(text="hello", content_id=request.content_id, correlation=correlation())
+    metadata = LLMMetadataRecoveryRequest(
+        text="hello", content_id=request.content_id, correlation=correlation()
+    )
     assert metadata.correlation.input_digest == "a" * 64
 
 
 def test_owner_routes_reject_extra_provider_or_queue_arguments() -> None:
     with pytest.raises(ValidationError):
-        TextEmbeddingRecoveryRequest.model_validate({"text": "hello", "content_id": "55555555-5555-4555-8555-555555555555", "correlation": correlation(), "queue_name": "arbitrary"})
+        TextEmbeddingRecoveryRequest.model_validate(
+            {
+                "text": "hello",
+                "content_id": "55555555-5555-4555-8555-555555555555",
+                "correlation": correlation(),
+                "queue_name": "arbitrary",
+            }
+        )

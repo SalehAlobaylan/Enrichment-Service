@@ -1,8 +1,9 @@
 """Topic tag + named-entity extraction via LLM.
 
 Aggregation passes `extract_tags: true` on /v1/embed for long-form content
-(ARTICLE/VIDEO/PODCAST). The extracted tags flow through to CMS's
-content_items.topic_tags column via the existing store_embedding write-back.
+(ARTICLE/VIDEO/PODCAST). Required embeddings are persisted first; the
+extracted tags then flow to CMS through a separate optional write-back so a
+slow LLM call cannot hold the required embedding lane open.
 
 Mirror of services/translation.py and services/summarization.py: short
 system prompt, JSON-only output, _strip_fences safety on the parse.

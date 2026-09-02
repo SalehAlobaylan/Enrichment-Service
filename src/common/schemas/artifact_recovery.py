@@ -1,6 +1,9 @@
 from pydantic import BaseModel, Field
 
-UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+UUID_PATTERN = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
 DIGEST_PATTERN = r"^[0-9a-f]{64}$"
 EVENT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,254}$"
 

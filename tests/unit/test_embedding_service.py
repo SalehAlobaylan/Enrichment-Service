@@ -1,7 +1,9 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.llm.services.tagging import TagsResult
 from src.retrieval.models.embedder import MAX_TEXT_LENGTH, EmbedderWrapper
 from src.retrieval.services.embedding import EmbeddingService
 
@@ -54,6 +56,73 @@ async def test_embed_writeback_with_content_ids(
 ) -> None:
     await service.embed(["hello", "world"], content_ids=["id-1", "id-2"])
     assert mock_cms.store_embedding.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_optional_tags_do_not_block_required_embedding_writeback(
+    mock_embedder: MagicMock, mock_cms: AsyncMock
+) -> None:
+    """Tag extraction is eventual; the required embedding receipt is not."""
+    mock_embedder.encode.return_value = {
+        "dense": [[0.1] * 1024],
+        "sparse": None,
+    }
+    tagger = MagicMock()
+    tagger.extract = AsyncMock(return_value=TagsResult(tags=["technology"]))
+    service = EmbeddingService(mock_embedder, mock_cms, tagger=tagger)
+
+    result = await service.embed(
+        ["a sufficiently long source text"],
+        content_ids=["id-1"],
+        extract_tags=True,
+    )
+
+    assert result.write_back_status == "ok"
+    mock_cms.store_embedding.assert_awaited_once()
+    assert mock_cms.store_embedding.call_args.kwargs["topic_tags"] is None
+
+    # Let the detached optional task finish after the required writeback has
+    # already returned. The test intentionally checks the two operations are
+    # separate so a stage-correlated embedding cannot be written twice.
+    for _ in range(10):
+        if mock_cms.update_topic_tags.await_count:
+            break
+        await asyncio.sleep(0)
+    mock_cms.update_topic_tags.assert_awaited_once_with("id-1", ["technology"])
+
+
+@pytest.mark.asyncio
+async def test_optional_tags_are_cancelled_when_required_writeback_fails(
+    mock_embedder: MagicMock, mock_cms: AsyncMock
+) -> None:
+    """A failed required receipt must not leave an orphan LLM task running."""
+    mock_embedder.encode.return_value = {
+        "dense": [[0.1] * 1024],
+        "sparse": None,
+    }
+    mock_cms.store_embedding.side_effect = RuntimeError("CMS unavailable")
+    cancelled = asyncio.Event()
+
+    async def blocked_tagging(_: str) -> TagsResult:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    tagger = MagicMock()
+    tagger.extract = blocked_tagging
+    service = EmbeddingService(mock_embedder, mock_cms, tagger=tagger)
+
+    result = await service.embed(
+        ["a sufficiently long source text"],
+        content_ids=["id-1"],
+        extract_tags=True,
+    )
+
+    assert result.write_back_status == "failed"
+    await asyncio.wait_for(cancelled.wait(), timeout=0.5)
+    mock_cms.update_topic_tags.assert_not_awaited()
 
 
 @pytest.mark.asyncio

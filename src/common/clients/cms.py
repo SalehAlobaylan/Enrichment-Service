@@ -45,6 +45,14 @@ class CMSClient:
             half_open_requests=settings.CB_HALF_OPEN_REQUESTS,
             metric_name="cms_telemetry",
         )
+        # Optional tag persistence must not open the core breaker used by
+        # required embeddings, retrieval, and lifecycle write-backs.
+        self.optional_metadata_circuit_breaker = CircuitBreaker(
+            failure_threshold=settings.CB_FAILURE_THRESHOLD,
+            reset_timeout_sec=settings.CB_RESET_TIMEOUT_SEC,
+            half_open_requests=settings.CB_HALF_OPEN_REQUESTS,
+            metric_name="cms_optional_metadata",
+        )
         headers = {
             "Content-Type": "application/json",
             "X-Service-Name": "enrichment-service",
@@ -127,6 +135,21 @@ class CMSClient:
             metric_label="update_content",
         )
 
+    async def update_topic_tags(self, content_id: str, topic_tags: list[str]) -> dict[str, Any]:
+        """Persist optional tags after the required embedding writeback.
+
+        This endpoint intentionally has no content-stage correlation. The
+        embedding write owns the required stage receipt; tags are an
+        idempotent optional enrichment effect and must not extend that lease.
+        """
+        return await self._request(
+            "PATCH",
+            f"/internal/content-items/{content_id}/topic-tags",
+            json={"topic_tags": topic_tags},
+            metric_label="update_topic_tags",
+            circuit_breaker=self.optional_metadata_circuit_breaker,
+        )
+
     async def merge_enrichment_metadata(
         self,
         content_id: str,
@@ -158,6 +181,17 @@ class CMSClient:
             json={"events": events},
             metric_label="emit_ai_spend_events",
             circuit_breaker=self.telemetry_circuit_breaker,
+        )
+
+    async def put_pipeline_lane_snapshot(
+        self, lane: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Publish bounded Enrichment lane telemetry; CMS remains the owner."""
+        return await self._request(
+            "PUT",
+            f"/internal/pipeline-lanes/{lane}/snapshot",
+            json={"lane": lane, **payload},
+            metric_label="put_pipeline_lane_snapshot",
         )
 
     # ─── Slice A: dense retrieval ───────────────────────────────────

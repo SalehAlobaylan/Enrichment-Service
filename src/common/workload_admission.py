@@ -75,12 +75,50 @@ class EmbeddingLaneAdmission:
 class WorkloadAdmission:
     def __init__(self, capacities: dict[str, int] | None = None) -> None:
         configured = capacities or WORKLOAD_CAPACITY
+        self._capacities = {name: max(1, int(value)) for name, value in configured.items()}
+        self._accepted: dict[str, int] = {}
+        self._rejected: dict[str, int] = {}
+        self._in_flight: dict[str, int] = {}
         self._semaphores = {
             workload: asyncio.BoundedSemaphore(capacity)
             for workload, capacity in configured.items()
             if workload != "embedding"
         }
         self._embedding = EmbeddingLaneAdmission(configured.get("embedding", 2))
+
+    def _accepted_work(self, workload: str) -> None:
+        self._accepted[workload] = self._accepted.get(workload, 0) + 1
+        self._in_flight[workload] = self._in_flight.get(workload, 0) + 1
+
+    def _rejected_work(self, workload: str) -> None:
+        self._rejected[workload] = self._rejected.get(workload, 0) + 1
+
+    def _finished_work(self, workload: str) -> None:
+        self._in_flight[workload] = max(0, self._in_flight.get(workload, 0) - 1)
+
+    def snapshot(self, lane: str | None = None) -> dict[str, dict[str, int]]:
+        """Return bounded, service-local admission evidence for CMS health.
+
+        Prometheus remains the detailed time-series surface. This compact
+        snapshot is the correlation point for a single lane-health record and
+        intentionally contains no request IDs, content, or provider data.
+        """
+        workloads = set(self._accepted) | set(self._rejected) | set(self._in_flight)
+        if lane is not None:
+            suffix = f"_{lane}"
+            workloads = {workload for workload in workloads if workload.endswith(suffix)}
+        return {
+            workload: {
+                "accepted": self._accepted.get(workload, 0),
+                "rejected": self._rejected.get(workload, 0),
+                "in_flight": self._in_flight.get(workload, 0),
+                "retry_after_seconds": RETRY_AFTER_SEC,
+            }
+            for workload in sorted(workloads)
+        }
+
+    def capacity(self, workload: str) -> int:
+        return self._capacities.get(workload, 0)
 
     @asynccontextmanager
     async def acquire(self, workload: str, lane: str | None = None) -> AsyncIterator[None]:
@@ -90,10 +128,12 @@ class WorkloadAdmission:
             try:
                 await self._embedding.enter(embedding_lane)
             except TimeoutError as exc:
+                self._rejected_work(metric_workload)
                 workload_admission_total.labels(
                     workload=metric_workload, outcome="rejected"
                 ).inc()
                 raise WorkloadOverloadedError(workload, lane) from exc
+            self._accepted_work(metric_workload)
             workload_admission_total.labels(
                 workload=metric_workload, outcome="accepted"
             ).inc()
@@ -101,6 +141,7 @@ class WorkloadAdmission:
             try:
                 yield
             finally:
+                self._finished_work(metric_workload)
                 workload_in_flight.labels(workload=metric_workload).dec()
                 await self._embedding.leave(embedding_lane)
             return
@@ -109,14 +150,17 @@ class WorkloadAdmission:
         try:
             await asyncio.wait_for(semaphore.acquire(), timeout=ADMISSION_WAIT_SEC)
         except TimeoutError as exc:
+            self._rejected_work(metric_workload)
             workload_admission_total.labels(workload=metric_workload, outcome="rejected").inc()
             raise WorkloadOverloadedError(workload, lane) from exc
 
+        self._accepted_work(metric_workload)
         workload_admission_total.labels(workload=metric_workload, outcome="accepted").inc()
         workload_in_flight.labels(workload=metric_workload).inc()
         try:
             yield
         finally:
+            self._finished_work(metric_workload)
             workload_in_flight.labels(workload=metric_workload).dec()
             semaphore.release()
 

@@ -11,6 +11,7 @@ from src.retrieval.schemas.embed import EmbedQueryResponse, EmbedResponse
 logger = get_logger(__name__)
 
 WRITEBACK_CONCURRENCY = 4
+_OPTIONAL_TAG_TASKS: set[asyncio.Task[None]] = set()
 
 
 def _space_descriptor(embedder: EmbedderWrapper) -> dict:
@@ -73,13 +74,6 @@ class EmbeddingService:
 
         embeddings_total.labels(status="success").inc()
 
-        tags_result: TagsResult | None = None
-        if tags_task is not None:
-            try:
-                tags_result = await tags_task
-            except Exception as exc:
-                logger.warning("tag_extraction_task_failed", error=str(exc))
-
         descriptor = _space_descriptor(self.embedder)
         response = EmbedResponse(
             embeddings=dense_vectors,
@@ -88,26 +82,87 @@ class EmbeddingService:
             space_id=descriptor.get("space_id", ""),
             producer_id=descriptor.get("producer_id", ""),
         )
-        if tags_result is not None:
-            response.tags = tags_result.tags
-            response.entities = tags_result.entities
-
         if content_ids:
-            topic_tags = tags_result.tags if tags_result else None
-            status, error = await self._write_back(
-                content_ids,
-                dense_vectors,
-                sparse_maps,
-                topic_tags,
-                descriptor,
-                artifact_recovery,
-                pipeline_repair,
-                content_stage,
-            )
+            # The required embedding receipt must complete before the request
+            # returns. Optional LLM tagging is deliberately not awaited here:
+            # waiting would keep the required embedding admission lease held
+            # while a slow provider call and a second CMS write complete.
+            try:
+                status, error = await self._write_back(
+                    content_ids,
+                    dense_vectors,
+                    sparse_maps,
+                    topic_tags=None,
+                    descriptor=descriptor,
+                    artifact_recovery=artifact_recovery,
+                    pipeline_repair=pipeline_repair,
+                    content_stage=content_stage,
+                )
+            except BaseException:
+                if tags_task is not None:
+                    await self._cancel_optional_tags(tags_task)
+                raise
             response.write_back_status = status
             response.write_back_error = error
 
+            if tags_task is not None and status == "ok":
+                task = asyncio.create_task(
+                    self._persist_optional_tags(tags_task, content_ids)
+                )
+                _OPTIONAL_TAG_TASKS.add(task)
+                task.add_done_callback(_OPTIONAL_TAG_TASKS.discard)
+            elif tags_task is not None:
+                # Do not leave an LLM task running after the required
+                # writeback failed. Its result cannot be safely attached to a
+                # stage that did not persist the corresponding vector.
+                await self._cancel_optional_tags(tags_task)
+        elif tags_task is not None:
+            # Stateless/tool callers still receive tags in the response. The
+            # request has no required CMS writeback lease to protect.
+            try:
+                tags_result = await tags_task
+                response.tags = tags_result.tags
+                response.entities = tags_result.entities
+            except Exception as exc:
+                logger.warning("tag_extraction_task_failed", error=str(exc))
+
         return response
+
+    async def _persist_optional_tags(
+        self,
+        tags_task: asyncio.Task[TagsResult],
+        content_ids: list[str],
+    ) -> None:
+        """Write LLM tags after embedding admission has been released."""
+        try:
+            tags_result = await tags_task
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive task boundary
+            logger.warning("optional_tag_extraction_failed", error=str(exc))
+            return
+
+        if not tags_result.tags:
+            return
+        for content_id in content_ids:
+            try:
+                await self.cms_client.update_topic_tags(content_id, tags_result.tags)
+            except Exception:  # noqa: BLE001 - optional metadata is best effort
+                logger.warning(
+                    "optional_topic_tags_writeback_failed",
+                    content_id=content_id,
+                )
+
+    @staticmethod
+    async def _cancel_optional_tags(tags_task: asyncio.Task[TagsResult]) -> None:
+        if not tags_task.done():
+            tags_task.cancel()
+        try:
+            await tags_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # pragma: no cover - defensive task boundary
+            logger.warning("tag_extraction_task_failed", error=str(exc))
 
     async def embed_query(self, text: str) -> EmbedQueryResponse:
         # Query embedding path only needs dense — sparse is for write-back to

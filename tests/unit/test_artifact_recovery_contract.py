@@ -51,9 +51,20 @@ def test_pipeline_repair_embedding_requires_one_exact_target_and_no_artifact_rec
         expected_item_version="2026-08-11T12:00:00.000000000Z",
         input_digest="b" * 64,
     )
-    request = EmbedRequest(texts=["body"], content_ids=["item-a"], pipeline_repair=pipeline_correlation)
+    request = EmbedRequest(
+        texts=["body"], content_ids=["item-a"], pipeline_repair=pipeline_correlation
+    )
     assert request.pipeline_repair == pipeline_correlation
     with pytest.raises(ValidationError):
-        EmbedRequest(texts=["one", "two"], content_ids=["a", "b"], pipeline_repair=pipeline_correlation)
+        EmbedRequest(
+            texts=["one", "two"],
+            content_ids=["a", "b"],
+            pipeline_repair=pipeline_correlation,
+        )
     with pytest.raises(ValidationError):
-        EmbedRequest(texts=["body"], content_ids=["item-a"], artifact_recovery=correlation(), pipeline_repair=pipeline_correlation)
+        EmbedRequest(
+            texts=["body"],
+            content_ids=["item-a"],
+            artifact_recovery=correlation(),
+            pipeline_repair=pipeline_correlation,
+        )

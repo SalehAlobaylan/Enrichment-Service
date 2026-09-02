@@ -129,3 +129,15 @@ async def test_executors_keep_blocking_workload_threads_isolated() -> None:
     assert embedding_thread.startswith("enrichment-embedding")
     assert rerank_thread.startswith("enrichment-rerank")
     assert embedding_thread != rerank_thread
+
+
+@pytest.mark.asyncio
+async def test_snapshot_is_attributed_to_one_embedding_lane() -> None:
+    admission = WorkloadAdmission({"embedding": 2})
+    async with admission.acquire("embedding", lane="news"):
+        news = admission.snapshot("news")
+        pods = admission.snapshot("pods")
+
+    assert news["embedding_news"]["accepted"] == 1
+    assert news["embedding_news"]["in_flight"] == 1
+    assert "embedding_news" not in pods
