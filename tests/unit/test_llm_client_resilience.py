@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,44 @@ def _client(*, fallback: str = "") -> LLMClient:
     # SDK construction depends on API keys; these direct tests use only the
     # dispatch seam and never make a network call.
     return client
+
+
+@pytest.mark.asyncio
+async def test_invalid_cached_output_is_regenerated_and_only_valid_output_cached() -> None:
+    client = _client()
+    cache = AsyncMock()
+    cache.get_entry.return_value = ("malformed", {})
+    client._cache = cache
+    async def primary(*_args):
+        return "valid", {"output_tokens": 10}
+    client._dispatch = {"openai": primary}
+    def validate(text):
+        if text != "valid":
+            raise LLMError("invalid output")
+    result = await client.complete("system", "user", validate_output=validate)
+    assert result == "valid"
+    cache.set_entry.assert_awaited_once()
+    assert cache.set_entry.await_args.args[1] == "valid"
+
+
+@pytest.mark.asyncio
+async def test_invalid_fresh_output_is_not_cached_but_is_metered() -> None:
+    client = _client()
+    cache = AsyncMock()
+    cache.get_entry.return_value = None
+    client._cache = cache
+    meter = SimpleNamespace(enqueue=lambda event: events.append(event))
+    events = []
+    client._spend_meter = meter
+    async def primary(*_args):
+        return "malformed", {"output_tokens": 10}
+    client._dispatch = {"openai": primary}
+    def validate(_text):
+        raise LLMError("invalid output")
+    with pytest.raises(LLMError, match="invalid output"):
+        await client.complete("system", "user", validate_output=validate)
+    cache.set_entry.assert_not_awaited()
+    assert len(events) == 1 and events[0]["units"]["output_tokens"] == 10
 
 
 @pytest.mark.asyncio

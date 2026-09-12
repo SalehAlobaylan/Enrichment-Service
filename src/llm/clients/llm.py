@@ -254,6 +254,7 @@ class LLMClient:
         system_run_id: str | None = None,
         tenant_id: str = "default",
         allow_cache: bool = True,
+        validate_output: Callable[[str], Any] | None = None,
     ) -> str:
         result = await self.complete_with_provenance(
             system_prompt,
@@ -265,6 +266,7 @@ class LLMClient:
             system_run_id=system_run_id,
             tenant_id=tenant_id,
             allow_cache=allow_cache,
+            validate_output=validate_output,
         )
         return result.text
 
@@ -279,6 +281,7 @@ class LLMClient:
         system_run_id: str | None = None,
         tenant_id: str = "default",
         allow_cache: bool = True,
+        validate_output: Callable[[str], Any] | None = None,
     ) -> LLMCompletion:
         chain = self._provider_chain()
         if not chain:
@@ -308,6 +311,14 @@ class LLMClient:
                 temperature=temperature,
             )
             cached_entry = await self._cache.get_entry(cache_key)  # type: ignore[union-attr]
+            if cached_entry is not None and validate_output is not None:
+                try:
+                    validate_output(cached_entry[0])
+                except LLMError:
+                    # Old cache entries predate semantic validation. Treat
+                    # invalid entries as misses; a valid result replaces them.
+                    cached_entry = None
+                    logger.warning("llm_invalid_cache_entry", operation=operation)
             if cached_entry is not None:
                 cached, cached_usage = cached_entry
                 llm_cache_hits_total.labels(provider=chain[0], operation=operation).inc()
@@ -368,10 +379,6 @@ class LLMClient:
                 # Cache only when the PRIMARY provider succeeded — fallback
                 # outputs come from a different model and shouldn't be served
                 # as cached "primary" responses.
-                if cache_eligible and cache_key and winner == chain[0]:
-                    await self._cache.set_entry(  # type: ignore[union-attr]
-                        cache_key, result, usage, self.settings.LLM_CACHE_TTL_SEC
-                    )
                 self._emit_spend(
                     provider=provider,
                     model=self.settings.model_for(provider),
@@ -382,6 +389,14 @@ class LLMClient:
                     system_run_id=system_run_id,
                     tenant_id=tenant_id,
                 )
+                # Meter paid responses even when their output is invalid, but
+                # never cache them or report them as usable completions.
+                if validate_output is not None:
+                    validate_output(result)
+                if cache_eligible and cache_key and winner == chain[0]:
+                    await self._cache.set_entry(  # type: ignore[union-attr]
+                        cache_key, result, usage, self.settings.LLM_CACHE_TTL_SEC
+                    )
                 return LLMCompletion(
                     text=result,
                     provider=provider,

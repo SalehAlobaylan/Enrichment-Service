@@ -13,6 +13,13 @@ class ChapterWindow(BaseModel):
     text: str
 
 
+class ProviderChapter(BaseModel):
+    start: float = Field(ge=0)
+    end: float | None = Field(default=None, ge=0)
+    title: str = Field(min_length=1, max_length=500)
+    source: str
+
+
 class ChaptersGenerateRequest(BaseModel):
     windows: list[ChapterWindow] = Field(..., min_length=1)
     # auto = natural/variable count; count = ~target_count; duration = ~target each.
@@ -23,6 +30,7 @@ class ChaptersGenerateRequest(BaseModel):
     max_sec: int | None = None
     with_summary: bool = True
     language: str | None = None
+    provider_chapters: list[ProviderChapter] = Field(default_factory=list, max_length=600)
 
 
 class GeneratedChapter(BaseModel):

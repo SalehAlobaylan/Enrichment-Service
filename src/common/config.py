@@ -74,7 +74,9 @@ class Settings(BaseSettings):
 
     # Timeouts — TRANSCRIBE_TIMEOUT_SEC moved to Media-Service.
     EXTRACT_TIMEOUT_SEC: int = 30
-    CMS_REQUEST_TIMEOUT_SEC: int = 10
+    # CMS snapshots and durable stage transitions may wait behind long-form
+    # media work; a ten-second client deadline caused false upstream failures.
+    CMS_REQUEST_TIMEOUT_SEC: int = 60
 
     # Redis — LLM response cache. The arq queue and its DB live in
     # Media-Service now.
