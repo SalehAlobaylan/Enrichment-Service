@@ -14,8 +14,16 @@ class RelatedRequest(BaseModel):
     slide assembly anchors on a content_item that already has a dense vector.
     """
 
-    content_id: str | None = Field(default=None, min_length=1, max_length=MAX_CONTENT_ID_CHARS)
+    content_id: str | None = Field(
+        default=None, min_length=1, max_length=MAX_CONTENT_ID_CHARS
+    )
     text: str | None = Field(default=None, min_length=1, max_length=MAX_RELATED_TEXT_CHARS)
+    # Text-anchored retrieval has no content row from which CMS can derive a
+    # tenant and pinned feed view. Content-ID requests may omit these fields;
+    # the CMS embedding response supplies the authoritative tuple.
+    tenant_id: str | None = Field(default=None, min_length=1, max_length=120)
+    news_generation_id: str | None = Field(default=None, min_length=1, max_length=64)
+    media_generation_id: str | None = Field(default=None, min_length=1, max_length=64)
     # Canonical content-kind filter. NEWS format is selected separately.
     types: list[Literal["NEWS", "VIDEO", "PODCAST"]] | None = Field(
         default=None, max_length=3
@@ -41,6 +49,17 @@ class RelatedRequest(BaseModel):
             raise ValueError("Provide either content_id or text")
         if self.content_id and self.text:
             raise ValueError("Provide content_id OR text, not both")
+        view_values = (
+            self.tenant_id,
+            self.news_generation_id,
+            self.media_generation_id,
+        )
+        has_view_value = any(value is not None for value in view_values)
+        has_complete_view = all(value is not None for value in view_values)
+        if has_view_value and not has_complete_view:
+            raise ValueError("tenant_id and both generation IDs must be provided together")
+        if self.text and not has_complete_view:
+            raise ValueError("Text retrieval requires tenant_id and both active generation IDs")
         return self
 
     @field_validator("exclude_ids")

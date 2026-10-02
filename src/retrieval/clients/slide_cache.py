@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 
 # Bump to invalidate every cached slide (e.g. after a ranking-rule or rerank
 # change that would make old slides wrong).
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 KEY_PREFIX = "enrich:slide"
 
@@ -36,6 +36,9 @@ class SlideCache:
     @staticmethod
     def make_key(
         anchor_content_id: str,
+        tenant_id: str,
+        news_generation_id: str,
+        media_generation_id: str,
         k: int,
         types: list[str] | None,
         formats: list[str] | None,
@@ -47,6 +50,9 @@ class SlideCache:
         payload = "\x1f".join(
             [
                 str(CACHE_VERSION),
+                tenant_id,
+                news_generation_id,
+                media_generation_id,
                 anchor_content_id,
                 str(k),
                 ",".join(sorted(types or [])),

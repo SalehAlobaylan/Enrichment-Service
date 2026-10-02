@@ -64,11 +64,14 @@ class RelatedService:
 
     async def related(self, req: RelatedRequest) -> RelatedResponse:
         with related_duration.time():
-            dense_q, anchor_text, space_id = await self._resolve_query(req)
+            dense_q, anchor_text, space_id, view = await self._resolve_query(req)
 
             dense_hits = await self.cms_client.knn_dense(
                 dense_q,
                 space_id,
+                tenant_id=view["tenant_id"],
+                news_generation_id=view["news_generation_id"],
+                media_generation_id=view["media_generation_id"],
                 types=req.types,
                 formats=req.formats,
                 k=self.settings.RELATED_K_DENSE_DEFAULT,
@@ -82,7 +85,7 @@ class RelatedService:
             reranked = candidates
             if req.rerank and self.reranker and self.reranker.is_loaded and anchor_text:
                 reranked = await self._rerank_candidates(
-                    anchor_text, candidates[: self.settings.RERANK_INPUT_K]
+                    anchor_text, candidates[: self.settings.RERANK_INPUT_K], view
                 )
 
         related_requests_total.labels(status="success").inc()
@@ -101,8 +104,8 @@ class RelatedService:
 
     async def _resolve_query(
         self, req: RelatedRequest
-    ) -> tuple[list[float], str | None, str]:
-        """Return (dense_vec, anchor_text_for_reranker, space_id).
+    ) -> tuple[list[float], str | None, str, dict[str, str]]:
+        """Return (dense_vec, anchor_text, space_id, pinned serving view).
 
         - content_id path: read vectors from CMS storage (avoid re-embedding;
           preserve exact write-time vectors). Anchor text is also fetched
@@ -111,9 +114,30 @@ class RelatedService:
           the reranker.
         """
         if req.content_id:
-            anchor = await self.cms_client.get_content_embeddings(req.content_id)
+            anchor = await self.cms_client.get_content_embeddings(
+                req.content_id,
+                tenant_id=req.tenant_id,
+                news_generation_id=req.news_generation_id,
+                media_generation_id=req.media_generation_id,
+            )
             dense = anchor.get("embedding")
             space_id = anchor.get("embedding_space_id")
+            view = {
+                "tenant_id": str(anchor.get("tenant_id") or ""),
+                "news_generation_id": str(anchor.get("news_generation_id") or ""),
+                "media_generation_id": str(anchor.get("media_generation_id") or ""),
+            }
+            if not all(view.values()):
+                raise ValueError("content anchor is not in a complete active feed view")
+            supplied_view = {
+                "tenant_id": req.tenant_id,
+                "news_generation_id": req.news_generation_id,
+                "media_generation_id": req.media_generation_id,
+            }
+            if any(value is not None for value in supplied_view.values()) and any(
+                supplied_view[key] != value for key, value in view.items()
+            ):
+                raise ValueError("requested serving view no longer matches the content anchor")
             if not dense:
                 raise ValueError(
                     f"content_id={req.content_id} has no dense embedding stored"
@@ -126,7 +150,7 @@ class RelatedService:
             # in _rerank_candidates so we don't pay the cost when rerank
             # is disabled. Return a sentinel marker (the content_id itself)
             # that the rerank path interprets correctly.
-            return dense, f"__cid__:{req.content_id}", space_id
+            return dense, f"__cid__:{req.content_id}", space_id, view
 
         # text path — caller supplied raw text; use it for both embedding
         # AND reranking.
@@ -136,10 +160,17 @@ class RelatedService:
         space_id = desc.get("space_id", "")
         if not space_id:
             raise ValueError("query embedding space is unresolved")
-        return encoded["dense"][0], req.text, space_id
+        view = {
+            "tenant_id": str(req.tenant_id or ""),
+            "news_generation_id": str(req.news_generation_id or ""),
+            "media_generation_id": str(req.media_generation_id or ""),
+        }
+        if not all(view.values()):
+            raise ValueError("text retrieval requires a complete serving view")
+        return encoded["dense"][0], req.text, space_id, view
 
     async def _rerank_candidates(
-        self, anchor_text: str, candidates: list[RelatedItem]
+        self, anchor_text: str, candidates: list[RelatedItem], view: dict[str, str]
     ) -> list[RelatedItem]:
         """Score (anchor, candidate) pairs with the cross-encoder, reorder.
 
@@ -153,7 +184,7 @@ class RelatedService:
         candidate_ids = [c.content_id for c in candidates]
         items_by_id: dict[str, dict] = {}
         try:
-            batch = await self.cms_client.batch_text(candidate_ids)
+            batch = await self.cms_client.batch_text(candidate_ids, **view)
             items_by_id = {item["id"]: item for item in batch}
         except Exception as exc:
             # CMS unavailable — fall back to dense kNN order. The reranker stage
@@ -167,7 +198,7 @@ class RelatedService:
         if anchor_text.startswith("__cid__:"):
             cid = anchor_text.split(":", 1)[1]
             try:
-                anchor_batch = await self.cms_client.batch_text([cid])
+                anchor_batch = await self.cms_client.batch_text([cid], **view)
             except Exception as exc:
                 logger.warning("rerank_anchor_text_fetch_failed", error=str(exc))
                 rerank_requests_total.labels(status="failure").inc()

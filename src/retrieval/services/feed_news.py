@@ -55,6 +55,15 @@ class FeedNewsService:
         self.cache = cache
 
     async def slide(self, req: FeedNewsSlideRequest) -> FeedNewsSlideResponse:
+        # Read the anchor's current serving-view tuple before the cache lookup.
+        # A head switch therefore creates a different cache namespace, and a
+        # retired or staged anchor cannot hit a response cached while it was live.
+        anchor_payload = await self.cms_client.get_content_item_basic(
+            req.anchor_content_id
+        )
+        anchor = self._anchor_from_payload(anchor_payload)
+        view = self._view_from_payload(anchor_payload)
+
         # Cache lookup — the assembled slide is keyed by anchor + retrieval
         # params. A hit skips the whole pipeline (2× kNN + rerank), which is
         # what keeps the cross-encoder off the synchronous feed path.
@@ -62,6 +71,9 @@ class FeedNewsService:
         if self.cache is not None:
             cache_key = SlideCache.make_key(
                 req.anchor_content_id,
+                view["tenant_id"],
+                view["news_generation_id"],
+                view["media_generation_id"],
                 req.k,
                 req.types,
                 req.formats,
@@ -81,18 +93,15 @@ class FeedNewsService:
             feed_slide_cache_misses_total.inc()
 
         with feed_news_duration.time():
-            # 1. Anchor — fetch the basic record from CMS for the response payload.
-            anchor_payload = await self.cms_client.get_content_item_basic(
-                req.anchor_content_id
-            )
-            anchor = self._anchor_from_payload(anchor_payload)
-
-            # 2. Dense retrieval + rerank. We over-fetch (RERANK_INPUT_K)
+            # Dense retrieval + rerank. We over-fetch (RERANK_INPUT_K)
             # because the ranking rules below WILL drop items and we want
             # the final list to still have `k` worth of survivors.
             related_resp = await self.related.related(
                 RelatedRequest(
                     content_id=req.anchor_content_id,
+                    tenant_id=view["tenant_id"],
+                    news_generation_id=view["news_generation_id"],
+                    media_generation_id=view["media_generation_id"],
                     types=req.types or _DEFAULT_TYPES,
                     formats=req.formats or _DEFAULT_FORMATS,
                     # Auto-exclude the anchor itself, then any caller-supplied ids.
@@ -146,3 +155,18 @@ class FeedNewsService:
             source_name=payload.get("source_name"),
             published_at=payload.get("published_at"),
         )
+
+    @staticmethod
+    def _view_from_payload(payload: dict) -> dict[str, str]:
+        """Resolve the serving tuple emitted by CMS for a public anchor."""
+        raw = payload.get("serving_view")
+        if not isinstance(raw, dict):
+            raise ValueError("anchor is not available in the active feed view")
+        view = {
+            "tenant_id": str(raw.get("tenant_id") or ""),
+            "news_generation_id": str(raw.get("news_generation_id") or ""),
+            "media_generation_id": str(raw.get("media_generation_id") or ""),
+        }
+        if not all(view.values()):
+            raise ValueError("anchor has no complete active feed view")
+        return view

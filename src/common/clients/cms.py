@@ -196,24 +196,43 @@ class CMSClient:
 
     # ─── Slice A: dense retrieval ───────────────────────────────────
 
-    async def get_content_embeddings(self, content_id: str) -> dict[str, Any]:
+    async def get_content_embeddings(
+        self,
+        content_id: str,
+        tenant_id: str | None = None,
+        news_generation_id: str | None = None,
+        media_generation_id: str | None = None,
+    ) -> dict[str, Any]:
         """GET /internal/content-items/:id/embeddings — fetch dense vector identity.
 
         Used by /v1/related when the caller passes content_id instead of text
-        — avoids re-embedding what's already stored. Returns:
-            {"embedding": list[float] | None,
-             "embedding_space_id": str | None}
+        — avoids re-embedding what's already stored. Returns the embedding,
+        tenant ID, and pinned News/Media generation IDs.
         """
+        params = None
+        if any(
+            value is not None
+            for value in (tenant_id, news_generation_id, media_generation_id)
+        ):
+            params = {
+                "tenant_id": tenant_id or "",
+                "news_generation_id": news_generation_id or "",
+                "media_generation_id": media_generation_id or "",
+            }
         return await self._request(
             "GET",
             f"/internal/content-items/{content_id}/embeddings",
             metric_label="get_content_embeddings",
+            params=params,
         )
 
     async def knn_dense(
         self,
         vector: list[float],
         space_id: str,
+        tenant_id: str,
+        news_generation_id: str,
+        media_generation_id: str,
         types: list[str] | None = None,
         formats: list[str] | None = None,
         k: int = 50,
@@ -227,6 +246,9 @@ class CMSClient:
         payload: dict[str, Any] = {
             "embedding": vector,
             "space_id": space_id,
+            "tenant_id": tenant_id,
+            "news_generation_id": news_generation_id,
+            "media_generation_id": media_generation_id,
             "types": types or [],
             "formats": formats or [],
             "k": k,
@@ -242,7 +264,13 @@ class CMSClient:
 
     # ─── Slice B: reranker batch text + anchor fetch ────────────────
 
-    async def batch_text(self, ids: list[str]) -> list[dict[str, Any]]:
+    async def batch_text(
+        self,
+        ids: list[str],
+        tenant_id: str,
+        news_generation_id: str,
+        media_generation_id: str,
+    ) -> list[dict[str, Any]]:
         """POST /internal/content-items/batch-text — fetch text + metadata
         for a small set of ids (typically the post-dense-kNN candidate pool that
         the reranker stage scores).
@@ -256,7 +284,12 @@ class CMSClient:
         resp = await self._request(
             "POST",
             "/internal/content-items/batch-text",
-            json={"ids": ids},
+            json={
+                "ids": ids,
+                "tenant_id": tenant_id,
+                "news_generation_id": news_generation_id,
+                "media_generation_id": media_generation_id,
+            },
             metric_label="batch_text",
         )
         return resp.get("items", [])
@@ -297,12 +330,15 @@ class CMSClient:
         json: dict[str, Any] | None = None,
         metric_label: str = "unknown",
         circuit_breaker: CircuitBreaker | None = None,
+        params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         async def _do_request() -> dict[str, Any]:
             url = self._build_url(path)
             request_id = current_request_id()
             headers = {"X-Request-ID": request_id} if request_id else None
-            resp = await self.client.request(method, url, json=json, headers=headers)
+            resp = await self.client.request(
+                method, url, json=json, headers=headers, params=params
+            )
             resp.raise_for_status()
             return resp.json()
 
