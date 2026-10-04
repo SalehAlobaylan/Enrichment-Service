@@ -1,8 +1,9 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=None if os.getenv("WAHB_MANAGED_ENV") == "1" else ".env", env_file_encoding="utf-8", extra="ignore")
 
     # Server
     PORT: int = 5050
