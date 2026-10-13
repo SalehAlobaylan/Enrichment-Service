@@ -16,7 +16,9 @@ async def classify_accounts(
 ) -> AccountClassifyResponse:
     """Classify ambiguous source accounts (OFFICIAL/NEWS/PERSON/OTHER) the
     deterministic CMS pass could not resolve. Per-account cached LLM call."""
-    service = AccountClassificationService(request.app.state.llm_client)
+    service = AccountClassificationService(
+        request.app.state.llm_client.for_context(body.spend_context)
+    )
     try:
         results = await service.classify(body.accounts)
         return AccountClassifyResponse(results=results)

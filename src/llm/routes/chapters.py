@@ -14,7 +14,7 @@ router = APIRouter(dependencies=[Depends(verify_service_token)])
 async def generate_chapters(
     body: ChaptersGenerateRequest, request: Request
 ) -> ChaptersGenerateResponse:
-    llm_client = request.app.state.llm_client
+    llm_client = request.app.state.llm_client.for_context(body.spend_context)
     service = ChaptersGenerationService(llm_client)
 
     try:

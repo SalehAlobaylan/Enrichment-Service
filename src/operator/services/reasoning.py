@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from src.common.middleware.error_handler import LLMError
 from src.common.utils.logging import get_logger
 from src.llm.clients.llm import LLMClient
+from src.llm.clients.spend_context import SpendContext
 from src.operator.schemas import (
     CONTRACT_VERSION,
     OperatorReasonModelOutput,
@@ -80,7 +81,20 @@ class OperatorReasoningService:
             separators=(",", ":"),
         )
         max_tokens = 1400 if request.tier == "fast" else 2600
-        completion = await self.llm.complete_with_provenance(
+        llm = (
+            self.llm.for_context(
+                SpendContext(
+                    tenant_id=request.packet.tenant_id,
+                    human_actor_id=request.packet.actor_id,
+                    trigger_source="operator",
+                    system_run_id=request.investigation_id,
+                    override_id=request.spend_override_id,
+                )
+            )
+            if hasattr(self.llm, "for_context")
+            else self.llm
+        )
+        completion = await llm.complete_with_provenance(
             SYSTEM_PROMPT,
             prompt,
             max_tokens=max_tokens,
@@ -88,6 +102,7 @@ class OperatorReasoningService:
             operation="operator_reason",
             trigger_source="operator",
             tenant_id=request.packet.tenant_id,
+            system_run_id=request.investigation_id,
             allow_cache=False,
         )
         try:

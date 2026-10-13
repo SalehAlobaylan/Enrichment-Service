@@ -4,6 +4,7 @@ Internal compatibility helper for a canonical NEWS anchor plus related NEWS
 items. It uses dense retrieval, cross-encoder reranking, and format-aware
 freshness, diversity, and quota rules. CMS owns public story-slide assembly.
 """
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -26,9 +27,7 @@ router = APIRouter(dependencies=[Depends(verify_service_token)])
 
 
 @router.post("/feed/news/slide", response_model=FeedNewsSlideResponse)
-async def feed_news_slide(
-    body: FeedNewsSlideRequest, request: Request
-) -> FeedNewsSlideResponse:
+async def feed_news_slide(body: FeedNewsSlideRequest, request: Request) -> FeedNewsSlideResponse:
     # No in-repository production caller exists. Keep this compatibility
     # surface observable before it is removed; it must never serve the public
     # News feed, which CMS assembles from live story state.
@@ -47,6 +46,7 @@ async def feed_news_slide(
         reranker=model_manager.reranker,
         admission=request.app.state.workload_admission,
         executors=getattr(request.app.state, "workload_executors", None),
+        spend_meter=getattr(request.app.state, "spend_meter", None),
     )
     feed_service = FeedNewsService(
         related_service,

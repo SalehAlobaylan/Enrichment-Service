@@ -1,4 +1,5 @@
 """Unit tests for FeedNewsService — News-feed slide orchestration."""
+
 from unittest.mock import AsyncMock
 
 import pytest
@@ -42,6 +43,11 @@ def mock_cms() -> AsyncMock:
         "excerpt": "anchor excerpt",
         "source_name": "anchor-source",
         "published_at": "2026-05-20T12:00:00Z",
+        "serving_view": {
+            "tenant_id": "tenant-a",
+            "news_generation_id": "news-a",
+            "media_generation_id": "media-a",
+        },
     }
     return cms
 
@@ -69,9 +75,7 @@ async def test_slide_returns_anchor_plus_related(
         ]
     )
 
-    resp = await service.slide(
-        FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3)
-    )
+    resp = await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
 
     assert resp.anchor.content_id == "anchor-1"
     assert resp.anchor.type == "NEWS"
@@ -109,22 +113,32 @@ async def test_slide_applies_source_diversity_before_truncate(
     mock_related.related.return_value = RelatedResponse(
         results=[
             RelatedItem(
-                content_id="a", score=0.9, content_type="NEWS", content_format="TWEET",
-                sources=["dense"], source_name="src-x",
+                content_id="a",
+                score=0.9,
+                content_type="NEWS",
+                content_format="TWEET",
+                sources=["dense"],
+                source_name="src-x",
             ),
             RelatedItem(
-                content_id="b", score=0.8, content_type="NEWS", content_format="TWEET",
-                sources=["dense"], source_name="src-x",
+                content_id="b",
+                score=0.8,
+                content_type="NEWS",
+                content_format="TWEET",
+                sources=["dense"],
+                source_name="src-x",
             ),
             RelatedItem(
-                content_id="c", score=0.7, content_type="NEWS", content_format="TWEET",
-                sources=["dense"], source_name="src-x",  # over cap
+                content_id="c",
+                score=0.7,
+                content_type="NEWS",
+                content_format="TWEET",
+                sources=["dense"],
+                source_name="src-x",  # over cap
             ),
         ]
     )
-    resp = await service.slide(
-        FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3)
-    )
+    resp = await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
     # Diversity drops the 3rd src-x item; nothing left to fill the 3rd slot.
     assert [r.content_id for r in resp.related] == ["a", "b"]
 
@@ -146,9 +160,7 @@ async def test_slide_caller_formats_override_default(
 ) -> None:
     mock_related.related.return_value = RelatedResponse(results=[])
     await service.slide(
-        FeedNewsSlideRequest(
-            anchor_content_id="anchor-1", k=3, formats=["COMMENT"]
-        )
+        FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3, formats=["COMMENT"])
     )
     related_request = mock_related.related.call_args.args[0]
     assert related_request.types == ["NEWS"]
@@ -169,9 +181,7 @@ async def test_slide_requests_oversize_k_for_rule_headroom(
 
 
 @pytest.mark.asyncio
-async def test_slide_rerank_always_on(
-    service: FeedNewsService, mock_related: AsyncMock
-) -> None:
+async def test_slide_rerank_always_on(service: FeedNewsService, mock_related: AsyncMock) -> None:
     mock_related.related.return_value = RelatedResponse(results=[])
     await service.slide(FeedNewsSlideRequest(anchor_content_id="anchor-1", k=3))
     related_request = mock_related.related.call_args.args[0]
@@ -186,7 +196,7 @@ async def test_slide_cache_hit_skips_pipeline(
     mock_related: AsyncMock, mock_cms: AsyncMock, settings: Settings
 ) -> None:
     """A cache hit returns the stored slide WITHOUT touching RelatedService
-    (the reranker) or CMS."""
+    (the reranker). CMS still verifies the current serving view."""
     cached = FeedNewsSlideResponse(
         anchor=FeedNewsAnchor(
             content_id="anchor-1",
@@ -215,7 +225,7 @@ async def test_slide_cache_hit_skips_pipeline(
     assert resp.anchor.title == "cached"
     assert [r.content_id for r in resp.related] == ["cached-r"]
     mock_related.related.assert_not_called()
-    mock_cms.get_content_item_basic.assert_not_called()
+    mock_cms.get_content_item_basic.assert_awaited_once_with("anchor-1")
     cache.set.assert_not_called()
 
 

@@ -152,6 +152,7 @@ class OperatorRecommendedAction(BaseModel):
 
 
 class OperatorReasonRequest(BaseModel):
+    spend_override_id: str | None = Field(default=None, max_length=36)
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[CONTRACT_VERSION]

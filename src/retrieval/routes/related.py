@@ -3,6 +3,7 @@
 Embeds the query (or fetches stored embeddings by content_id), runs CMS dense
 kNN, optionally reranks its bounded candidate pool, and returns ranked items.
 """
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from src.common.auth.service_auth import verify_service_token
@@ -35,6 +36,7 @@ async def related(body: RelatedRequest, request: Request) -> RelatedResponse:
         reranker=model_manager.reranker,
         admission=request.app.state.workload_admission,
         executors=getattr(request.app.state, "workload_executors", None),
+        spend_meter=getattr(request.app.state, "spend_meter", None),
     )
 
     try:

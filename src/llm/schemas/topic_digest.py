@@ -1,10 +1,12 @@
 from pydantic import BaseModel, Field, field_validator
 
+from src.llm.clients.spend_context import SpendRequest
+
 MAX_TOPIC_TEXTS = 10
 MAX_TOPIC_TEXT_CHARS = 6_000
 
 
-class TopicDigestRequest(BaseModel):
+class TopicDigestRequest(SpendRequest):
     # Representative member posts (title + excerpt/body) of ONE news story, from
     # multiple sources. The digest is generated in the posts' language (Arabic).
     texts: list[str] = Field(..., min_length=1, max_length=MAX_TOPIC_TEXTS)

@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.llm.clients.spend_context import SpendRequest
+
 # Media Studio Clearance Autopilot (stage 6, Slice 4) — advisory chapter
 # proposals. The LLM drafts a publish/reject suggestion for the editorial review
 # cases the deterministic rules could not clear. A proposal is NEVER an action:
@@ -25,7 +27,7 @@ class ChapterProposalItem(BaseModel):
     parent_title: str = Field(default="", max_length=400)
 
 
-class ChapterProposalRequest(BaseModel):
+class ChapterProposalRequest(SpendRequest):
     items: list[ChapterProposalItem] = Field(..., min_length=1, max_length=15)
 
 

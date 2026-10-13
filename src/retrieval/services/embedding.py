@@ -1,9 +1,14 @@
 import asyncio
+import time
+from datetime import UTC, datetime
 
 from src.common.clients.cms import CMSClient
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import embedding_duration, embeddings_total
 from src.common.workload_admission import WorkloadExecutors
+from src.llm.clients.compute_meter import emit_compute
+from src.llm.clients.spend_context import SpendContext
+from src.llm.clients.spend_meter import SpendMeter
 from src.llm.services.tagging import TaggingService, TagsResult
 from src.retrieval.models.embedder import EmbedderWrapper
 from src.retrieval.schemas.embed import EmbedQueryResponse, EmbedResponse
@@ -30,6 +35,8 @@ class EmbeddingService:
         cms_client: CMSClient,
         tagger: TaggingService | None = None,
         executors: WorkloadExecutors | None = None,
+        spend_meter: SpendMeter | None = None,
+        spend_context: SpendContext | None = None,
     ):
         self.embedder = embedder
         self.cms_client = cms_client
@@ -38,13 +45,25 @@ class EmbeddingService:
         # silently ignored.
         self.tagger = tagger
         self.executors = executors
+        self.spend_meter = spend_meter
+        self.spend_context = spend_context or SpendContext()
 
     async def _encode(self, texts: list[str], extract_sparse: bool):
+        started = time.perf_counter()
         if self.executors is not None:
-            return await self.executors.run(
+            result = await self.executors.run(
                 "embedding", self.embedder.encode, texts, extract_sparse
             )
-        return await asyncio.to_thread(self.embedder.encode, texts, extract_sparse)
+        else:
+            result = await asyncio.to_thread(self.embedder.encode, texts, extract_sparse)
+        emit_compute(
+            self.spend_meter,
+            self.spend_context,
+            "embedding",
+            self.embedder.model_name,
+            {"items": len(texts), "compute_ms": (time.perf_counter() - started) * 1000},
+        )
+        return result
 
     async def embed(
         self,
@@ -106,9 +125,7 @@ class EmbeddingService:
             response.write_back_error = error
 
             if tags_task is not None and status == "ok":
-                task = asyncio.create_task(
-                    self._persist_optional_tags(tags_task, content_ids)
-                )
+                task = asyncio.create_task(self._persist_optional_tags(tags_task, content_ids))
                 _OPTIONAL_TAG_TASKS.add(task)
                 task.add_done_callback(_OPTIONAL_TAG_TASKS.discard)
             elif tags_task is not None:
@@ -121,6 +138,7 @@ class EmbeddingService:
             # request has no required CMS writeback lease to protect.
             try:
                 tags_result = await tags_task
+                response.tag_skip_reason = tags_result.skip_reason
                 response.tags = tags_result.tags
                 response.entities = tags_result.entities
             except Exception as exc:
@@ -142,6 +160,22 @@ class EmbeddingService:
             logger.warning("optional_tag_extraction_failed", error=str(exc))
             return
 
+        if tags_result.skip_reason:
+            for content_id in content_ids:
+                try:
+                    await self.cms_client.merge_enrichment_metadata(
+                        content_id,
+                        {
+                            "ai_spend_tagging_skip": {
+                                "reason": tags_result.skip_reason,
+                                "system_run_id": self.spend_context.system_run_id or "",
+                                "occurred_at": datetime.now(UTC).isoformat(),
+                            }
+                        },
+                    )
+                except Exception:
+                    logger.warning("optional_tag_skip_writeback_failed", content_id=content_id)
+            return
         if not tags_result.tags:
             return
         for content_id in content_ids:

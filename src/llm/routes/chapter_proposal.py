@@ -17,7 +17,7 @@ router = APIRouter(dependencies=[Depends(verify_service_token)])
 async def chapter_proposal(
     body: ChapterProposalRequest, request: Request
 ) -> ChapterProposalResponse:
-    llm_client = request.app.state.llm_client
+    llm_client = request.app.state.llm_client.for_context(body.spend_context)
     service = ChapterProposalService(llm_client)
 
     try:

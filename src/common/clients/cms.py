@@ -169,17 +169,34 @@ class CMSClient:
             metric_label="merge_enrichment_metadata",
         )
 
-    async def emit_ai_spend_events(self, events: list[dict[str, Any]]) -> None:
-        """Best-effort governor metering. Callers schedule this and never await it.
-
-        A failed ledger write must not turn a successful enrichment operation
-        into a user-visible failure.
-        """
-        await self._request(
+    async def emit_ai_spend_events(
+        self, events: list[dict[str, Any]], health: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return await self._request(
             "POST",
             "/internal/ai-spend/events",
-            json={"events": events},
+            json={"events": events, **({"health": health} if health else {})},
             metric_label="emit_ai_spend_events",
+            circuit_breaker=self.telemetry_circuit_breaker,
+        )
+
+    async def get_ai_spend_allowance(
+        self,
+        tenant_id: str,
+        spend_class: str = "llm",
+        trigger_source: str = "unknown",
+        override_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/internal/ai-spend/allowance",
+            params={
+                "tenant_id": tenant_id,
+                "class": spend_class,
+                "trigger_source": trigger_source,
+                **({"override_id": override_id} if override_id else {}),
+            },
+            metric_label="ai_spend_allowance",
             circuit_breaker=self.telemetry_circuit_breaker,
         )
 
@@ -210,10 +227,7 @@ class CMSClient:
         tenant ID, and pinned News/Media generation IDs.
         """
         params = None
-        if any(
-            value is not None
-            for value in (tenant_id, news_generation_id, media_generation_id)
-        ):
+        if any(value is not None for value in (tenant_id, news_generation_id, media_generation_id)):
             params = {
                 "tenant_id": tenant_id or "",
                 "news_generation_id": news_generation_id or "",
@@ -336,9 +350,7 @@ class CMSClient:
             url = self._build_url(path)
             request_id = current_request_id()
             headers = {"X-Request-ID": request_id} if request_id else None
-            resp = await self.client.request(
-                method, url, json=json, headers=headers, params=params
-            )
+            resp = await self.client.request(method, url, json=json, headers=headers, params=params)
             resp.raise_for_status()
             return resp.json()
 

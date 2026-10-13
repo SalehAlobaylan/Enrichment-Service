@@ -19,11 +19,15 @@
 ║ in-process RerankerWrapper path is unchanged underneath.                  ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
+
+import time
+
 from fastapi import APIRouter, Depends, Request
 
 from src.common.auth.service_auth import verify_service_token
 from src.common.middleware.error_handler import EmbeddingError
 from src.common.utils.logging import get_logger
+from src.llm.clients.compute_meter import emit_compute
 from src.retrieval.schemas.rerank import RerankRequest, RerankResponse
 
 logger = get_logger(__name__)
@@ -45,10 +49,18 @@ async def rerank(body: RerankRequest, request: Request) -> RerankResponse:
 
     import asyncio
 
+    started = time.perf_counter()
     async with request.app.state.workload_admission.acquire("rerank"):
         executors = getattr(request.app.state, "workload_executors", None)
         if executors is not None:
             scores = await executors.run("rerank", reranker.rerank, body.query, body.candidates)
         else:
             scores = await asyncio.to_thread(reranker.rerank, body.query, body.candidates)
+    emit_compute(
+        getattr(request.app.state, "spend_meter", None),
+        body.spend_context,
+        "rerank",
+        reranker.model_name,
+        {"pairs": len(body.candidates), "compute_ms": (time.perf_counter() - started) * 1000},
+    )
     return RerankResponse(scores=[float(s) for s in scores], model=reranker.model_name)

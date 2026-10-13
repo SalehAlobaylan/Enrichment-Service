@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import random
 import time
 from collections.abc import Awaitable, Callable
@@ -9,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from src.common.config import Settings
-from src.common.middleware.error_handler import LLMError
+from src.common.middleware.error_handler import BudgetCappedError, LLMError
 from src.common.middleware.request_id import current_request_id
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import (
@@ -25,6 +26,7 @@ from src.common.utils.metrics import (
 )
 from src.common.workload_admission import WorkloadAdmission, WorkloadExecutors
 from src.llm.clients.llm_cache import LLMCache
+from src.llm.clients.spend_context import SpendAllowanceCache, SpendContext
 from src.llm.clients.spend_meter import SpendMeter
 
 if TYPE_CHECKING:
@@ -162,6 +164,8 @@ class LLMClient:
         self.primary_provider = (settings.LLM_PROVIDER or "").strip().lower()
         self._cache = cache if settings.LLM_CACHE_ENABLED else None
         self._cms_client = cms_client
+        self._spend_context: SpendContext | None = None
+        self._allowance = SpendAllowanceCache(cms_client, spend_meter) if cms_client else None
         self._admission = admission
         self._spend_meter = spend_meter
         self._executors = executors
@@ -222,7 +226,14 @@ class LLMClient:
         """Backward-compat alias for the primary model."""
         return self.settings.LLM_MODEL
 
+    def for_context(self, context: SpendContext) -> "LLMClient":
+        bound = copy.copy(self)
+        bound._spend_context = context
+        return bound
+
     async def close(self) -> None:
+        if self._allowance is not None:
+            await self._allowance.close()
         """Close SDK transports without letting shutdown failures block exit."""
         for client in self._clients.values():
             close = getattr(client, "aclose", None) or getattr(client, "close", None)
@@ -283,6 +294,15 @@ class LLMClient:
         allow_cache: bool = True,
         validate_output: Callable[[str], Any] | None = None,
     ) -> LLMCompletion:
+        context = self._spend_context or SpendContext(
+            tenant_id=tenant_id, trigger_source=trigger_source, system_run_id=system_run_id
+        )
+        tenant_id, trigger_source, system_run_id = (
+            context.tenant_id,
+            context.trigger_source,
+            context.system_run_id,
+        )
+        known_item = operation in {"translate", "chapter_proposal", "topic_digest"}
         chain = self._provider_chain()
         if not chain:
             # No provider configured at all.
@@ -332,10 +352,14 @@ class LLMClient:
                     model=self.settings.model_for(chain[0]),
                     operation=operation,
                     usage=cached_usage or {},
+                    input_text=system_prompt + user_prompt,
+                    output_text=cached,
+                    override_id=context.override_id,
                     cached=True,
                     trigger_source=trigger_source,
                     system_run_id=system_run_id,
                     tenant_id=tenant_id,
+                    operation_items=1 if known_item else None,
                 )
                 return LLMCompletion(
                     text=cached,
@@ -346,9 +370,16 @@ class LLMClient:
                 )
             llm_cache_misses_total.labels(provider=chain[0], operation=operation).inc()
 
+        # Cache hits require no paid admission. Refreshes run in the background.
+        if context.admission is not None and context.admission.get("allowed") is False:
+            if not (context.serving_exempt and context.trigger_source == "serving_news_summary"):
+                raise BudgetCappedError(str(context.admission.get("reason", "budget_capped")))
+        elif self._allowance is not None:
+            await self._allowance.authorize(context)
         last_error: LLMError | None = None
         winner: str | None = None
         deadline = asyncio.get_running_loop().time() + REQUEST_DEADLINE_SEC
+        item_recorded = False
         for idx, provider in enumerate(chain):
             if self._remaining_budget(deadline) < MIN_ATTEMPT_BUDGET_SEC:
                 last_error = self._deadline_error(operation)
@@ -374,6 +405,7 @@ class LLMClient:
                     temperature,
                     operation,
                     deadline,
+                    tenant_id,
                 )
                 winner = provider
                 # Cache only when the PRIMARY provider succeeded — fallback
@@ -384,13 +416,20 @@ class LLMClient:
                     model=self.settings.model_for(provider),
                     operation=operation,
                     usage=usage,
+                    input_text=system_prompt + user_prompt,
+                    output_text=result,
+                    override_id=context.override_id,
                     cached=False,
                     trigger_source=trigger_source,
                     system_run_id=system_run_id,
                     tenant_id=tenant_id,
+                    operation_items=int(not item_recorded) if known_item else None,
                 )
+                item_recorded = True
                 # Meter paid responses even when their output is invalid, but
                 # never cache them or report them as usable completions.
+                if not result.strip():
+                    raise LLMError("LLM returned empty response")
                 if validate_output is not None:
                     validate_output(result)
                 if cache_eligible and cache_key and winner == chain[0]:
@@ -440,6 +479,7 @@ class LLMClient:
         temperature: float,
         operation: str,
         deadline: float,
+        tenant_id: str = "default",
     ) -> tuple[str, dict[str, int]]:
         """Run one provider through the retry loop. Raises LLMError on exhaustion.
 
@@ -454,13 +494,16 @@ class LLMClient:
             if remaining < MIN_ATTEMPT_BUDGET_SEC:
                 raise self._deadline_error(operation)
             start = time.perf_counter()
+            provider_started = False
             try:
                 if self._admission is None:
                     async with asyncio.timeout(remaining):
+                        provider_started = True
                         result = await call(system_prompt, user_prompt, max_tokens, temperature)
                 else:
                     async with self._admission.acquire("llm_sync"):
                         async with asyncio.timeout(remaining):
+                            provider_started = True
                             result = await call(system_prompt, user_prompt, max_tokens, temperature)
                 llm_attempts_total.labels(
                     provider=provider, operation=operation, status="success"
@@ -472,7 +515,13 @@ class LLMClient:
                     provider=provider, operation=operation, status="success"
                 ).inc()
                 return result
+            except asyncio.CancelledError:
+                if provider_started and self._spend_meter is not None:
+                    self._spend_meter.unobservable_attempt(tenant_id)
+                raise
             except LLMError as exc:
+                if provider_started and self._spend_meter is not None:
+                    self._spend_meter.unobservable_attempt(tenant_id)
                 # Empty response and other library-internal errors are not
                 # retryable within this provider, but DO trigger fallback.
                 llm_requests_total.labels(
@@ -484,6 +533,8 @@ class LLMClient:
                 ).inc()
                 raise LLMError(f"{provider}: {exc}") from exc
             except TimeoutError as exc:
+                if provider_started and self._spend_meter is not None:
+                    self._spend_meter.unobservable_attempt(tenant_id)
                 last_exc = exc
                 llm_errors_total.labels(provider=provider, error_type="timeout").inc()
                 llm_attempts_total.labels(
@@ -499,6 +550,8 @@ class LLMClient:
                     ).inc()
                     raise LLMError(f"{provider}: request timed out") from exc
             except Exception as exc:
+                if provider_started and self._spend_meter is not None:
+                    self._spend_meter.unobservable_attempt(tenant_id)
                 last_exc = exc
                 error_type, retryable = _classify_error(exc)
                 llm_errors_total.labels(provider=provider, error_type=error_type).inc()
@@ -553,20 +606,38 @@ class LLMClient:
         trigger_source: str,
         system_run_id: str | None,
         tenant_id: str,
+        input_text: str = "",
+        output_text: str = "",
+        override_id: str | None = None,
+        operation_items: int | None = None,
     ) -> None:
         """Schedule metering without coupling LLM availability to CMS."""
         if self._spend_meter is None:
             return
+        estimated = not bool(usage)
+        if estimated:
+            usage = {
+                "input_tokens": max(1, (len(input_text) + 3) // 4),
+                "output_tokens": (len(output_text) + 3) // 4,
+            }
         event: dict[str, Any] = {
             "event_id": str(uuid4()),
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "override_id": override_id or "",
+            "human_actor_id": self._spend_context.human_actor_id if self._spend_context else "",
             "spend_class": "llm",
             "operation": operation,
             "provider": provider,
             "model": model,
-            "units": usage,
+            # Count a known request once across paid fallback responses. Retain
+            # zero on subsequent receipts so their costs share that denominator.
+            "units": {
+                **usage,
+                **({"operation_items": operation_items} if operation_items is not None else {}),
+            },
             "cached": cached,
-            "estimated": not bool(usage),
-            "avoided_cost_estimated": cached and not bool(usage),
+            "estimated": estimated,
+            "avoided_cost_estimated": cached and estimated,
             "trigger_source": trigger_source,
             "system_run_id": system_run_id or "",
             "tenant_id": tenant_id,
@@ -591,10 +662,8 @@ class LLMClient:
             extra_headers=extra_headers,
         )
         content = response.choices[0].message.content
-        if not content:
-            raise LLMError("LLM returned empty response")
-        usage = response.usage
-        return content, {
+        usage = getattr(response, "usage", None)
+        return content or "", {} if usage is None else {
             "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
             "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         }
@@ -621,10 +690,8 @@ class LLMClient:
             extra_headers=extra_headers,
         )
         content = response.choices[0].message.content
-        if not content:
-            raise LLMError("LLM returned empty response")
-        usage = response.usage
-        return content, {
+        usage = getattr(response, "usage", None)
+        return content or "", {} if usage is None else {
             "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
             "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         }
@@ -643,10 +710,9 @@ class LLMClient:
             temperature=temperature,
             extra_headers=extra_headers,
         )
-        if not response.content:
-            raise LLMError("LLM returned empty response")
-        usage = response.usage
-        return response.content[0].text, {
+        usage = getattr(response, "usage", None)
+        text = response.content[0].text if response.content else ""
+        return text, {} if usage is None else {
             "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
             "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
         }
@@ -706,10 +772,8 @@ class LLMClient:
             )
 
         text = getattr(response, "text", None)
-        if not text:
-            raise LLMError("LLM returned empty response")
         usage = getattr(response, "usage_metadata", None)
-        return text, {
+        return text or "", {} if usage is None else {
             "input_tokens": int(getattr(usage, "prompt_token_count", 0) or 0),
             "output_tokens": int(getattr(usage, "candidates_token_count", 0) or 0),
             "thoughts_tokens": int(getattr(usage, "thoughts_token_count", 0) or 0),

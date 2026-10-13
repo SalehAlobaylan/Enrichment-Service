@@ -1,10 +1,12 @@
 from pydantic import BaseModel, Field, field_validator
 
+from src.llm.clients.spend_context import SpendRequest
+
 MAX_TOPIC_LABEL_TEXTS = 10
 MAX_TOPIC_LABEL_TEXT_CHARS = 6_000
 
 
-class TopicLabelRequest(BaseModel):
+class TopicLabelRequest(SpendRequest):
     # One or more representative article snippets (title + excerpt) that seed a
     # new topic. The label is generated in the same language as the snippets.
     texts: list[str] = Field(..., min_length=1, max_length=MAX_TOPIC_LABEL_TEXTS)

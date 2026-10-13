@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from src.llm.clients.spend_context import SpendRequest
+
 MAX_CLASSIFY_ACCOUNTS = 50
 MAX_HANDLE_CHARS = 100
 MAX_ACCOUNT_NAME_CHARS = 200
@@ -12,14 +14,13 @@ class AccountToClassify(BaseModel):
     bio: str = Field(default="", max_length=MAX_ACCOUNT_BIO_CHARS)
 
 
-class AccountClassifyRequest(BaseModel):
+class AccountClassifyRequest(SpendRequest):
     # The ambiguous accounts the deterministic pass could not confidently class.
-    accounts: list[AccountToClassify] = Field(
-        ..., min_length=1, max_length=MAX_CLASSIFY_ACCOUNTS
-    )
+    accounts: list[AccountToClassify] = Field(..., min_length=1, max_length=MAX_CLASSIFY_ACCOUNTS)
 
 
 class AccountClassResult(BaseModel):
+    budget_capped: bool = False
     handle: str
     source_class: str  # official | news | person | other
 

@@ -27,6 +27,10 @@ class LLMError(Exception):
     pass
 
 
+class BudgetCappedError(LLMError):
+    pass
+
+
 async def global_error_handler(request: Request, exc: Exception) -> JSONResponse:
     request_id = getattr(request.state, "request_id", "unknown")
 
@@ -85,6 +89,18 @@ async def global_error_handler(request: Request, exc: Exception) -> JSONResponse
                 "error": str(exc),
                 "error_code": "EMBEDDING_FAILED",
                 "retryable": False,
+                "request_id": request_id,
+            },
+        )
+
+    if isinstance(exc, BudgetCappedError):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": str(exc),
+                "error_code": "AI_BUDGET_CAPPED",
+                "retryable": False,
+                "reason": str(exc),
                 "request_id": request_id,
             },
         )

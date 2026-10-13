@@ -1,4 +1,5 @@
 """Unit tests for RelatedService — dense retrieval orchestration."""
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -62,7 +63,14 @@ async def test_related_text_path_embeds_then_queries_dense_only(
     mock_cms.knn_dense.return_value = [{"id": "a", "type": "NEWS", "score": 0.9}]
 
     response = await service.related(
-        RelatedRequest(text="Saudi climate", types=["NEWS"], k=5)
+        RelatedRequest(
+            tenant_id="tenant-a",
+            news_generation_id="news-a",
+            media_generation_id="media-a",
+            text="Saudi climate",
+            types=["NEWS"],
+            k=5,
+        )
     )
 
     mock_embedder.encode.assert_called_once_with(["Saudi climate"], False)
@@ -79,11 +87,16 @@ async def test_related_content_id_path_skips_embed(
     mock_cms.get_content_embeddings.return_value = {
         "embedding": [0.1] * 1024,
         "embedding_space_id": "space-text",
+        "tenant_id": "tenant-a",
+        "news_generation_id": "news-a",
+        "media_generation_id": "media-a",
     }
 
     await service.related(RelatedRequest(content_id="anchor-1", k=3))
 
-    mock_cms.get_content_embeddings.assert_awaited_once_with("anchor-1")
+    mock_cms.get_content_embeddings.assert_awaited_once_with(
+        "anchor-1", tenant_id=None, news_generation_id=None, media_generation_id=None
+    )
     mock_embedder.encode.assert_not_called()
 
 
@@ -93,6 +106,9 @@ async def test_related_filters_passthrough_to_dense_cms(
 ) -> None:
     await service.related(
         RelatedRequest(
+            tenant_id="tenant-a",
+            news_generation_id="news-a",
+            media_generation_id="media-a",
             text="x",
             types=["NEWS"],
             formats=["ARTICLE", "TWEET"],
@@ -115,6 +131,9 @@ async def test_related_ignores_legacy_sparse_anchor_data(
     mock_cms.get_content_embeddings.return_value = {
         "embedding": [0.1] * 1024,
         "embedding_space_id": "space-text",
+        "tenant_id": "tenant-a",
+        "news_generation_id": "news-a",
+        "media_generation_id": "media-a",
         "embedding_sparse": {"100": 0.5},
     }
     mock_cms.knn_dense.return_value = [{"id": "x", "type": "NEWS", "score": 0.7}]
@@ -126,13 +145,18 @@ async def test_related_ignores_legacy_sparse_anchor_data(
 
 
 @pytest.mark.asyncio
-async def test_related_truncates_to_request_k(
-    service: RelatedService, mock_cms: AsyncMock
-) -> None:
+async def test_related_truncates_to_request_k(service: RelatedService, mock_cms: AsyncMock) -> None:
     mock_cms.knn_dense.return_value = [
-        {"id": f"d{i}", "type": "NEWS", "score": 1 - i / 100}
-        for i in range(20)
+        {"id": f"d{i}", "type": "NEWS", "score": 1 - i / 100} for i in range(20)
     ]
 
-    response = await service.related(RelatedRequest(text="x", k=3))
+    response = await service.related(
+        RelatedRequest(
+            tenant_id="tenant-a",
+            news_generation_id="news-a",
+            media_generation_id="media-a",
+            text="x",
+            k=3,
+        )
+    )
     assert len(response.results) == 3

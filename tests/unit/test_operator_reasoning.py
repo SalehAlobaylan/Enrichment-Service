@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -58,6 +58,7 @@ def reason_body() -> dict:
 @pytest.mark.asyncio
 async def test_operator_reasoning_disables_cache_and_attaches_observed_provenance() -> None:
     llm = AsyncMock()
+    llm.for_context = Mock(return_value=llm)
     llm.complete_with_provenance.return_value = SimpleNamespace(
         text=json.dumps(
             {
@@ -90,6 +91,7 @@ async def test_operator_reasoning_disables_cache_and_attaches_observed_provenanc
 @pytest.mark.asyncio
 async def test_operator_reasoning_rejects_invalid_or_invented_output() -> None:
     llm = AsyncMock()
+    llm.for_context = Mock(return_value=llm)
     llm.complete_with_provenance.return_value = SimpleNamespace(
         text=json.dumps(
             {

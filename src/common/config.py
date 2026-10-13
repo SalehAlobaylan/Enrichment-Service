@@ -1,9 +1,14 @@
 import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=None if os.getenv("WAHB_MANAGED_ENV") == "1" else ".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=None if os.getenv("WAHB_MANAGED_ENV") == "1" else ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     # Server
     PORT: int = 5050
@@ -161,11 +166,7 @@ class Settings(BaseSettings):
     def service_auth_token(self) -> str:
         if self.is_production:
             return self.SERVICE_AUTH_TOKEN
-        return (
-            self.SERVICE_AUTH_TOKEN
-            or self.ENRICHMENT_SERVICE_TOKEN
-            or self.CMS_SERVICE_TOKEN
-        )
+        return self.SERVICE_AUTH_TOKEN or self.ENRICHMENT_SERVICE_TOKEN or self.CMS_SERVICE_TOKEN
 
     @property
     def cms_writeback_token(self) -> str:
@@ -175,9 +176,7 @@ class Settings(BaseSettings):
     def fallback_providers(self) -> list[str]:
         """Parsed LLM_FALLBACK_PROVIDERS as a clean ordered list."""
         return [
-            p.strip().lower()
-            for p in (self.LLM_FALLBACK_PROVIDERS or "").split(",")
-            if p.strip()
+            p.strip().lower() for p in (self.LLM_FALLBACK_PROVIDERS or "").split(",") if p.strip()
         ]
 
     def model_for(self, provider: str) -> str:
@@ -218,11 +217,7 @@ class Settings(BaseSettings):
         errors: list[str] = []
         warnings: list[str] = []
         role = (self.ENRICHMENT_ROLE or "api").strip().lower()
-        provider = (
-            (self.LLM_PROVIDER or "").strip().lower()
-            if role != "reranker"
-            else "none"
-        )
+        provider = (self.LLM_PROVIDER or "").strip().lower() if role != "reranker" else "none"
 
         if role not in {"api", "reranker"}:
             errors.append("ENRICHMENT_ROLE must be one of: api, reranker")
@@ -235,19 +230,13 @@ class Settings(BaseSettings):
                 _missing_key("LLM_PROVIDER=openai but OPENAI_API_KEY is empty")
         elif provider == "anthropic":
             if not self.ANTHROPIC_API_KEY.strip():
-                _missing_key(
-                    "LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty"
-                )
+                _missing_key("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty")
         elif provider == "gemini":
             if not self.GEMINI_API_KEY.strip():
-                _missing_key(
-                    "LLM_PROVIDER=gemini but GEMINI_API_KEY is empty"
-                )
+                _missing_key("LLM_PROVIDER=gemini but GEMINI_API_KEY is empty")
         elif provider == "deepseek":
             if not self.DEEPSEEK_API_KEY.strip():
-                _missing_key(
-                    "LLM_PROVIDER=deepseek but DEEPSEEK_API_KEY is empty"
-                )
+                _missing_key("LLM_PROVIDER=deepseek but DEEPSEEK_API_KEY is empty")
         elif provider in ("", "none", "disabled"):
             pass
         else:
@@ -286,16 +275,12 @@ class Settings(BaseSettings):
                 )
                 continue
             if not _provider_keys[fp].strip():
-                _missing_key(
-                    f"LLM_FALLBACK_PROVIDERS includes {fp!r} but its API key is empty"
-                )
+                _missing_key(f"LLM_FALLBACK_PROVIDERS includes {fp!r} but its API key is empty")
             if not self.model_for(fp):
                 errors.append(f"LLM fallback provider {fp!r} has no resolved model")
 
         if self.is_production and not self.SERVICE_AUTH_TOKEN.strip():
-            errors.append(
-                "SERVICE_AUTH_TOKEN must be set in production for inbound requests"
-            )
+            errors.append("SERVICE_AUTH_TOKEN must be set in production for inbound requests")
 
         if self.is_production and role == "api" and not self.CMS_ENRICHMENT_SERVICE_TOKEN.strip():
             errors.append("CMS_ENRICHMENT_SERVICE_TOKEN must be set for production API write-back")
@@ -306,9 +291,7 @@ class Settings(BaseSettings):
             and self.RERANKER_BASE_URL.strip()
             and not self.RERANKER_SERVICE_TOKEN.strip()
         ):
-            errors.append(
-                "RERANKER_SERVICE_TOKEN must be set for a production remote reranker"
-            )
+            errors.append("RERANKER_SERVICE_TOKEN must be set for a production remote reranker")
 
         if self.is_production and not self.ENRICHMENT_RESTART_TOKEN:
             errors.append("ENRICHMENT_RESTART_TOKEN must be set in production")

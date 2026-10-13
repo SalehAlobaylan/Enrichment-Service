@@ -1,4 +1,5 @@
 """Integration tests for POST /v1/feed/news/slide — auth, validation, end-to-end shape."""
+
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
@@ -12,6 +13,11 @@ def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, 
     cms.get_content_item_basic = AsyncMock(
         return_value={
             "id": "anchor-1",
+            "serving_view": {
+                "tenant_id": "default",
+                "news_generation_id": "news-active",
+                "media_generation_id": "media-active",
+            },
             "type": "NEWS",
             "format": "ARTICLE",
             "title": "Saudi climate announcement",
@@ -24,6 +30,9 @@ def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, 
         return_value={
             "embedding": [0.1] * 1024,
             "embedding_space_id": "qwen-test-space-v1",
+            "tenant_id": "default",
+            "news_generation_id": "news-active",
+            "media_generation_id": "media-active",
         }
     )
     cms.knn_dense = AsyncMock(
@@ -84,23 +93,17 @@ def test_feed_news_slide_happy_path(client: TestClient, auth_headers: dict[str, 
     assert feed_news_compatibility_requests_total._value.get() == before + 1
 
 
-def test_feed_news_slide_requires_anchor(
-    client: TestClient, auth_headers: dict[str, str]
-) -> None:
+def test_feed_news_slide_requires_anchor(client: TestClient, auth_headers: dict[str, str]) -> None:
     resp = client.post("/v1/feed/news/slide", json={"k": 3}, headers=auth_headers)
     assert resp.status_code == 422
 
 
 def test_feed_news_slide_requires_auth(client: TestClient) -> None:
-    resp = client.post(
-        "/v1/feed/news/slide", json={"anchor_content_id": "x"}
-    )
+    resp = client.post("/v1/feed/news/slide", json={"anchor_content_id": "x"})
     assert resp.status_code in (401, 403)
 
 
-def test_feed_news_slide_rejects_bad_k(
-    client: TestClient, auth_headers: dict[str, str]
-) -> None:
+def test_feed_news_slide_rejects_bad_k(client: TestClient, auth_headers: dict[str, str]) -> None:
     resp = client.post(
         "/v1/feed/news/slide",
         json={"anchor_content_id": "x", "k": 0},  # below min

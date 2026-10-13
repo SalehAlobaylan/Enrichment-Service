@@ -13,7 +13,7 @@ router = APIRouter(dependencies=[Depends(verify_service_token)])
 
 @router.post("/translate", response_model=TranslateResponse)
 async def translate(body: TranslateRequest, request: Request) -> TranslateResponse:
-    llm_client = request.app.state.llm_client
+    llm_client = request.app.state.llm_client.for_context(body.spend_context)
     cms_client = request.app.state.cms_client
     service = TranslationService(llm_client, cms_client)
 

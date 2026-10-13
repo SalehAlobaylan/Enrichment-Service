@@ -3,6 +3,7 @@ import json
 
 from pydantic import ValidationError
 
+from src.common.middleware.error_handler import BudgetCappedError
 from src.common.utils.logging import get_logger
 from src.llm.clients.llm import LLMClient
 from src.llm.schemas.chapter_proposal import (
@@ -63,9 +64,7 @@ class ChapterProposalService:
     def __init__(self, llm_client: LLMClient):
         self.llm = llm_client
 
-    async def propose_batch(
-        self, items: list[ChapterProposalItem]
-    ) -> ChapterProposalResponse:
+    async def propose_batch(self, items: list[ChapterProposalItem]) -> ChapterProposalResponse:
         items = items[:MAX_PROPOSAL_BATCH_SIZE]
         semaphore = asyncio.Semaphore(PROPOSAL_CONCURRENCY)
 
@@ -81,6 +80,8 @@ class ChapterProposalService:
             except asyncio.TimeoutError:
                 logger.warning("chapter_proposal_timed_out", id=item.id)
                 return None, True
+            except BudgetCappedError:
+                raise
             except Exception as exc:
                 # One malformed provider response must not discard valid cases
                 # from the same bounded batch. Never log model output here.
@@ -120,6 +121,8 @@ class ChapterProposalService:
                 temperature=0.2,
                 operation="chapter_proposal",
             )
+        except BudgetCappedError:
+            raise
         except Exception as exc:
             logger.warning("chapter_proposal_llm_failed", id=item.id, error=str(exc))
             return None

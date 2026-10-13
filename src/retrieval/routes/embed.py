@@ -25,12 +25,16 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
     model_manager = request.app.state.model_manager
     cms_client = request.app.state.cms_client
     llm_client = request.app.state.llm_client
+    if body.extract_tags:
+        llm_client = llm_client.for_context(body.spend_context)
     tagger = TaggingService(llm_client) if body.extract_tags else None
     service = EmbeddingService(
         model_manager.embedder,
         cms_client,
         tagger=tagger,
         executors=getattr(request.app.state, "workload_executors", None),
+        spend_meter=getattr(request.app.state, "spend_meter", None),
+        spend_context=body.spend_context,
     )
 
     if not model_manager.embedder.is_loaded:
@@ -58,9 +62,7 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
                     pipeline_repair=body.pipeline_repair.model_dump()
                     if body.pipeline_repair
                     else None,
-                    content_stage=body.content_stage.model_dump()
-                    if body.content_stage
-                    else None,
+                    content_stage=body.content_stage.model_dump() if body.content_stage else None,
                 )
     except (EmbeddingError, WorkloadOverloadedError):
         raise
@@ -78,6 +80,8 @@ async def embed_query(body: EmbedQueryRequest, request: Request) -> EmbedQueryRe
         model_manager.embedder,
         cms_client,
         executors=getattr(request.app.state, "workload_executors", None),
+        spend_meter=getattr(request.app.state, "spend_meter", None),
+        spend_context=body.spend_context,
     )
 
     if not model_manager.embedder.is_loaded:

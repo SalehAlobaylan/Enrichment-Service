@@ -29,7 +29,7 @@ class ChapterOutputError(LLMError):
 def _strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
-        text = text[text.index("\n") + 1:] if "\n" in text else text[3:]
+        text = text[text.index("\n") + 1 :] if "\n" in text else text[3:]
     if text.endswith("```"):
         text = text[: text.rfind("```")]
     return text.strip()
@@ -133,10 +133,17 @@ class ChaptersGenerationService:
         ]
         user_prompt = (
             f"{self._build_instructions(req)}\n\n"
-            + ("Provider chapter hints (seconds; select corresponding WINDOW indices):\n"
-               + json.dumps([marker.model_dump() for marker in req.provider_chapters], ensure_ascii=False)
-               + "\n\n" if req.provider_chapters else "")
-            + "Transcript windows:\n\n" + "\n".join(lines)
+            + (
+                "Provider chapter hints (seconds; select corresponding WINDOW indices):\n"
+                + json.dumps(
+                    [marker.model_dump() for marker in req.provider_chapters], ensure_ascii=False
+                )
+                + "\n\n"
+                if req.provider_chapters
+                else ""
+            )
+            + "Transcript windows:\n\n"
+            + "\n".join(lines)
         )
 
         def validate(raw: str) -> list[GeneratedChapter]:
@@ -149,8 +156,11 @@ class ChaptersGenerationService:
                 for attempt, budget in enumerate((4096, 8192)):
                     try:
                         raw = await self.llm.complete(
-                            SYSTEM_PROMPT, user_prompt, max_tokens=budget,
-                            temperature=0.3, operation="chapters_generate",
+                            SYSTEM_PROMPT,
+                            user_prompt,
+                            max_tokens=budget,
+                            temperature=0.3,
+                            operation="chapters_generate",
                             validate_output=validate,
                         )
                         return ChaptersGenerateResponse(chapters=validate(raw))

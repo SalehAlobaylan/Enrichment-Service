@@ -1,9 +1,11 @@
 from pydantic import BaseModel, Field
 
+from src.llm.clients.spend_context import SpendRequest
+
 MAX_TRANSLATION_TEXT_CHARS = 12_000
 
 
-class TranslateRequest(BaseModel):
+class TranslateRequest(SpendRequest):
     text: str = Field(..., min_length=1, max_length=MAX_TRANSLATION_TEXT_CHARS)
     source_language: str | None = Field(default=None, min_length=2, max_length=16)
     target_language: str = Field(default="en", min_length=2, max_length=16)

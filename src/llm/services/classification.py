@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+from src.common.middleware.error_handler import BudgetCappedError
 from src.common.utils.logging import get_logger
 from src.common.utils.metrics import llm_output_invalid_total
 from src.llm.clients.llm import LLMClient
@@ -37,7 +38,7 @@ CONCURRENCY = 5
 def _strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
-        text = text[text.index("\n") + 1:] if "\n" in text else text[3:]
+        text = text[text.index("\n") + 1 :] if "\n" in text else text[3:]
     if text.endswith("```"):
         text = text[: text.rfind("```")]
     return text.strip()
@@ -70,19 +71,22 @@ class AccountClassificationService:
                     if item is None:
                         return
                     index, account = item
-                    source_class = await self._classify_one(
-                        account.handle, account.name, account.bio
-                    )
+                    budget_capped = False
+                    try:
+                        source_class = await self._classify_one(
+                            account.handle, account.name, account.bio
+                        )
+                    except BudgetCappedError:
+                        source_class, budget_capped = "other", True
                     results[index] = AccountClassResult(
-                        handle=account.handle, source_class=source_class
+                        handle=account.handle,
+                        source_class=source_class,
+                        budget_capped=budget_capped,
                     )
                 finally:
                     queue.task_done()
 
-        workers = [
-            asyncio.create_task(worker())
-            for _ in range(min(CONCURRENCY, len(accounts)))
-        ]
+        workers = [asyncio.create_task(worker()) for _ in range(min(CONCURRENCY, len(accounts)))]
         try:
             await queue.join()
         finally:
@@ -110,6 +114,8 @@ class AccountClassificationService:
                 temperature=0.0,
                 operation="classify_source",
             )
+        except BudgetCappedError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("classify_failed", handle=handle, error=str(exc))
             return "other"
@@ -132,7 +138,5 @@ class AccountClassificationService:
             and parsed["class"].strip().lower() in VALID
         ):
             return parsed["class"].strip().lower()
-        llm_output_invalid_total.labels(
-            operation="classify_source", reason="invalid_schema"
-        ).inc()
+        llm_output_invalid_total.labels(operation="classify_source", reason="invalid_schema").inc()
         return "other"

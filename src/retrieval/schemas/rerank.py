@@ -5,13 +5,16 @@ because the reranker had to be split onto its own deployment — see
 `src/retrieval/routes/rerank.py` and `Settings.ENRICHMENT_ROLE`. When a single
 instance can hold both models again, this internal endpoint can be removed.
 """
+
 from pydantic import BaseModel, Field, field_validator
+
+from src.llm.clients.spend_context import SpendRequest
 
 MAX_RERANK_CANDIDATES = 32
 MAX_RERANK_TEXT_CHARS = 4_000
 
 
-class RerankRequest(BaseModel):
+class RerankRequest(SpendRequest):
     """A cross-encoder rerank request: score each candidate against the query."""
 
     query: str = Field(..., min_length=1, max_length=MAX_RERANK_TEXT_CHARS)

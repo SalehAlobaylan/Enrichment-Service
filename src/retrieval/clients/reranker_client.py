@@ -16,9 +16,13 @@ REMOVE WHEN: a single instance can hold both models (~8GB). Clear
 RERANKER_BASE_URL → ModelManager uses the in-process RerankerWrapper again and
 this client is dead code.
 """
+
+import copy
+
 import httpx
 
 from src.common.utils.logging import get_logger
+from src.llm.clients.spend_context import SpendContext
 
 logger = get_logger(__name__)
 
@@ -35,6 +39,7 @@ class RerankerClient:
         # RERANK_INPUT_K lowered to ~8, a batch now finishes in ~15s anyway.
         timeout_sec: float = 50.0,
     ) -> None:
+        self._spend_context = SpendContext()
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._model_name = model_name
@@ -63,6 +68,11 @@ class RerankerClient:
         """Release the pooled keep-alive transport during role shutdown."""
         self._client.close()
 
+    def for_context(self, context: SpendContext) -> "RerankerClient":
+        bound = copy.copy(self)
+        bound._spend_context = context
+        return bound
+
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         """Score candidates against the query via the remote reranker.
 
@@ -77,7 +87,11 @@ class RerankerClient:
 
         resp = self._client.post(
             f"{self._base_url}/v1/rerank",
-            json={"query": query, "candidates": candidates},
+            json={
+                "query": query,
+                "candidates": candidates,
+                "spend_context": self._spend_context.model_dump(),
+            },
             headers=headers,
         )
         resp.raise_for_status()

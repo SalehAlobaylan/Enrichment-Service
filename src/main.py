@@ -83,7 +83,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await model_manager.warmup()
         app.state.settings = settings
         app.state.model_manager = model_manager
-        app.state.cms_client = None
+        role_cms = CMSClient(settings)
+        role_meter = SpendMeter(role_cms)
+        role_meter.start()
+        app.state.cms_client = role_cms
+        app.state.spend_meter = role_meter
         app.state.llm_client = None
         app.state.redis_llm = None
         app.state.migration_redis = migration_redis
@@ -92,6 +96,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.workload_executors = WorkloadExecutors()
         logger.info("ready", models=model_manager.is_ready)
         yield
+        await role_meter.close()
+        await role_cms.close()
         model_manager.close()
         app.state.workload_executors.close()
         if migration_redis is not None:
@@ -166,16 +172,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """
         usage = resource.getrusage(resource.RUSAGE_SELF)
         rss_bytes = int(usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024)
-        await cms_client.put_pipeline_lane_snapshot(lane, {
-            "required_queue_depth": 0,
-            "optional_queue_depth": 0,
-            "required_oldest_age_seconds": 0,
-            "optional_oldest_age_seconds": 0,
-            "dlq_delta": 0,
-            "enrichment_counts": workload_admission.snapshot(lane),
-            "process_metrics": {"pid": os.getpid(), "max_rss_bytes": rss_bytes},
-            "resource_metrics": {"embedding_capacity": workload_admission.capacity("embedding")},
-        })
+        await cms_client.put_pipeline_lane_snapshot(
+            lane,
+            {
+                "required_queue_depth": 0,
+                "optional_queue_depth": 0,
+                "required_oldest_age_seconds": 0,
+                "optional_oldest_age_seconds": 0,
+                "dlq_delta": 0,
+                "enrichment_counts": workload_admission.snapshot(lane),
+                "process_metrics": {"pid": os.getpid(), "max_rss_bytes": rss_bytes},
+                "resource_metrics": {
+                    "embedding_capacity": workload_admission.capacity("embedding")
+                },
+            },
+        )
 
     async def publish_lane_snapshots() -> None:
         while True:

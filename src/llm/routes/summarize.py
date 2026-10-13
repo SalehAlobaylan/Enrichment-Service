@@ -14,7 +14,7 @@ router = APIRouter(dependencies=[Depends(verify_service_token)])
 
 @router.post("/summarize", response_model=SummarizeResponse)
 async def summarize(body: SummarizeRequest, request: Request) -> SummarizeResponse:
-    llm_client = request.app.state.llm_client
+    llm_client = request.app.state.llm_client.for_context(body.spend_context)
     cms_client = request.app.state.cms_client
     service = SummarizationService(llm_client, cms_client)
 
@@ -28,9 +28,7 @@ async def summarize(body: SummarizeRequest, request: Request) -> SummarizeRespon
                 artifact_recovery=body.artifact_recovery.model_dump()
                 if body.artifact_recovery
                 else None,
-                content_stage=body.content_stage.model_dump()
-                if body.content_stage
-                else None,
+                content_stage=body.content_stage.model_dump() if body.content_stage else None,
             )
     except (LLMError, WorkloadOverloadedError):
         raise

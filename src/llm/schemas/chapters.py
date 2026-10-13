@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from src.llm.clients.spend_context import SpendRequest
+
 
 class ChapterWindow(BaseModel):
     """A coarse time-window of the transcript (CMS groups fine segments into
@@ -20,7 +22,7 @@ class ProviderChapter(BaseModel):
     source: str
 
 
-class ChaptersGenerateRequest(BaseModel):
+class ChaptersGenerateRequest(SpendRequest):
     windows: list[ChapterWindow] = Field(..., min_length=1)
     # auto = natural/variable count; count = ~target_count; duration = ~target each.
     mode: Literal["auto", "count", "duration"] = "auto"

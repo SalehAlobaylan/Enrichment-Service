@@ -70,9 +70,7 @@ async def test_translation_reports_persisted_writeback_without_replacing_metadat
 
     assert result.write_back_status == "persisted"
     assert result.write_back_error is None
-    cms.merge_enrichment_metadata.assert_awaited_once_with(
-        "content-1", {"translation_en": "Hello"}
-    )
+    cms.merge_enrichment_metadata.assert_awaited_once_with("content-1", {"translation_en": "Hello"})
 
 
 @pytest.mark.asyncio
@@ -103,7 +101,10 @@ async def test_chapters_rejects_garbage_output() -> None:
 @pytest.mark.asyncio
 async def test_chapters_repairs_invalid_output_once_with_larger_budget() -> None:
     llm = AsyncMock()
-    llm.complete.side_effect = ['{"chapters": [', '{"chapters":[{"start_index":0,"end_index":0,"title":"عنوان ذو معنى"}]}']
+    llm.complete.side_effect = [
+        '{"chapters": [',
+        '{"chapters":[{"start_index":0,"end_index":0,"title":"عنوان ذو معنى"}]}',
+    ]
     req = ChaptersGenerateRequest(windows=[ChapterWindow(index=0, start_sec=0, text="Transcript")])
     result = await ChaptersGenerationService(llm).generate(req)
     assert result.chapters[0].title == "عنوان ذو معنى"
@@ -126,7 +127,9 @@ async def test_chapters_rejects_empty_plan_before_cutting() -> None:
 @pytest.mark.asyncio
 async def test_chapters_frame_transcript_instructions_as_untrusted_data() -> None:
     llm = AsyncMock()
-    llm.complete.return_value = '{"chapters":[{"start_index":0,"end_index":0,"title":"Safe title"}]}'
+    llm.complete.return_value = (
+        '{"chapters":[{"start_index":0,"end_index":0,"title":"Safe title"}]}'
+    )
     await ChaptersGenerationService(llm).generate(
         ChaptersGenerateRequest(
             windows=[
@@ -146,11 +149,17 @@ async def test_chapters_frame_transcript_instructions_as_untrusted_data() -> Non
 @pytest.mark.asyncio
 async def test_chapters_supplies_provider_hints_as_editorial_data() -> None:
     llm = AsyncMock()
-    llm.complete.return_value = '{"chapters":[{"start_index":0,"end_index":0,"title":"التاريخ النووي"}]}'
-    await ChaptersGenerationService(llm).generate(ChaptersGenerateRequest(
-        windows=[ChapterWindow(index=0, start_sec=0, text="Transcript")],
-        provider_chapters=[{"start": 0, "end": 600, "title": "التاريخ النووي", "source": "youtube"}],
-    ))
+    llm.complete.return_value = (
+        '{"chapters":[{"start_index":0,"end_index":0,"title":"التاريخ النووي"}]}'
+    )
+    await ChaptersGenerationService(llm).generate(
+        ChaptersGenerateRequest(
+            windows=[ChapterWindow(index=0, start_sec=0, text="Transcript")],
+            provider_chapters=[
+                {"start": 0, "end": 600, "title": "التاريخ النووي", "source": "youtube"}
+            ],
+        )
+    )
     system_prompt, user_prompt = llm.complete.await_args.args[:2]
     assert "untrusted editorial data" in system_prompt
     assert "التاريخ النووي" in user_prompt

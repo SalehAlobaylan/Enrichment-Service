@@ -3,12 +3,13 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from src.common.schemas.artifact_recovery import ArtifactRecoveryCorrelation
+from src.llm.clients.spend_context import SpendRequest
 from src.retrieval.schemas.embed import ContentStageCorrelation
 
 MAX_LLM_TEXT_CHARS = 12_000
 
 
-class SummarizeRequest(BaseModel):
+class SummarizeRequest(SpendRequest):
     text: str = Field(..., min_length=1, max_length=MAX_LLM_TEXT_CHARS)
     max_length: int = Field(default=200, ge=20, le=1_000)
     style: Literal["brief", "detailed", "bullet"] = "brief"

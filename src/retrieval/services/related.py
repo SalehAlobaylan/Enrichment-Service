@@ -13,7 +13,9 @@ Why rerank: nearest-neighbor order is similarity-based, not calibrated
 relevance. Cross-encoders see both texts together and produce better quality
 on the small candidate set passed to them.
 """
+
 import asyncio
+import time
 
 from src.common.clients.cms import CMSClient
 from src.common.config import Settings
@@ -25,6 +27,10 @@ from src.common.utils.metrics import (
     rerank_requests_total,
 )
 from src.common.workload_admission import WorkloadAdmission, WorkloadExecutors
+from src.llm.clients.compute_meter import emit_compute
+from src.llm.clients.spend_context import SpendContext
+from src.llm.clients.spend_meter import SpendMeter
+from src.retrieval.clients.reranker_client import RerankerClient
 from src.retrieval.models.embedder import EmbedderWrapper
 from src.retrieval.models.reranker import RerankerWrapper
 from src.retrieval.schemas.related import RelatedItem, RelatedRequest, RelatedResponse
@@ -41,6 +47,7 @@ class RelatedService:
         reranker: RerankerWrapper | None = None,
         admission: WorkloadAdmission | None = None,
         executors: WorkloadExecutors | None = None,
+        spend_meter: SpendMeter | None = None,
     ) -> None:
         self.embedder = embedder
         self.cms_client = cms_client
@@ -51,6 +58,8 @@ class RelatedService:
         self.reranker = reranker
         self.admission = admission
         self.executors = executors
+        self.spend_meter = spend_meter
+        self.spend_context = SpendContext()
 
     async def _run_blocking(self, workload: str, function, *args):
         if self.admission is None:
@@ -63,6 +72,7 @@ class RelatedService:
             return await asyncio.to_thread(function, *args)
 
     async def related(self, req: RelatedRequest) -> RelatedResponse:
+        self.spend_context = req.spend_context
         with related_duration.time():
             dense_q, anchor_text, space_id, view = await self._resolve_query(req)
 
@@ -77,6 +87,11 @@ class RelatedService:
                 k=self.settings.RELATED_K_DENSE_DEFAULT,
                 exclude_ids=req.exclude_ids,
             )
+            self.spend_context = self.spend_context.model_copy(
+                update={"tenant_id": view["tenant_id"]}
+            )
+            if isinstance(self.reranker, RerankerClient):
+                self.reranker = self.reranker.for_context(self.spend_context)
             candidates = self._dense_results(dense_hits)
 
             # Slice B — rerank stage. Skipped when the caller disabled it,
@@ -139,13 +154,9 @@ class RelatedService:
             ):
                 raise ValueError("requested serving view no longer matches the content anchor")
             if not dense:
-                raise ValueError(
-                    f"content_id={req.content_id} has no dense embedding stored"
-                )
+                raise ValueError(f"content_id={req.content_id} has no dense embedding stored")
             if not space_id:
-                raise ValueError(
-                    f"content_id={req.content_id} has an unstamped dense embedding"
-                )
+                raise ValueError(f"content_id={req.content_id} has an unstamped dense embedding")
             # Anchor text for reranker: fetched on-demand from batch_text
             # in _rerank_candidates so we don't pay the cost when rerank
             # is disabled. Return a sentinel marker (the content_id itself)
@@ -154,7 +165,15 @@ class RelatedService:
 
         # text path — caller supplied raw text; use it for both embedding
         # AND reranking.
+        started = time.perf_counter()
         encoded = await self._run_blocking("embedding", self.embedder.encode, [req.text], False)
+        emit_compute(
+            self.spend_meter,
+            self.spend_context.model_copy(update={"tenant_id": req.tenant_id or "default"}),
+            "embedding",
+            self.settings.EMBEDDING_MODEL,
+            {"items": 1, "compute_ms": (time.perf_counter() - started) * 1000},
+        )
         raw_desc = self.embedder.space_descriptor()
         desc = raw_desc if isinstance(raw_desc, dict) else {}
         space_id = desc.get("space_id", "")
@@ -230,6 +249,7 @@ class RelatedService:
         # general safeguard (keep it whether or not the reranker is split out);
         # it also happens to cover the extra failure mode the TEMP split adds
         # (the reranker being a remote HTTP call — see ModelManager).
+        started = time.perf_counter()
         try:
             with rerank_duration.time():
                 scores = await self._run_blocking(
@@ -239,6 +259,17 @@ class RelatedService:
             logger.warning("rerank_scoring_failed", error=str(exc))
             rerank_requests_total.labels(status="failure").inc()
             return candidates
+        if not isinstance(self.reranker, RerankerClient):
+            emit_compute(
+                self.spend_meter,
+                self.spend_context,
+                "rerank",
+                self.reranker.model_name,
+                {
+                    "pairs": len(candidate_texts),
+                    "compute_ms": (time.perf_counter() - started) * 1000,
+                },
+            )
         rerank_requests_total.labels(status="success").inc()
 
         # Build new ordered list: reranked items first (by rerank score

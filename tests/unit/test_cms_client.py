@@ -21,8 +21,7 @@ def make_settings(cms_base_url: str) -> Settings:
 def test_build_url_avoids_duplicate_internal_prefix() -> None:
     client = CMSClient(make_settings("http://localhost:8080/internal"))
     assert (
-        client._build_url("/internal/transcripts")
-        == "http://localhost:8080/internal/transcripts"
+        client._build_url("/internal/transcripts") == "http://localhost:8080/internal/transcripts"
     )
 
 
@@ -101,18 +100,27 @@ async def test_knn_dense_sends_kind_and_format_filters_independently() -> None:
         return_value=Response(200, json={"hits": []})
     )
 
-    assert await client.knn_dense(
-        [0.1, 0.2],
-        "qwen-v1",
-        types=["NEWS"],
-        formats=["ARTICLE", "TWEET"],
-        k=8,
-        exclude_ids=["anchor"],
-    ) == []
+    assert (
+        await client.knn_dense(
+            [0.1, 0.2],
+            "qwen-v1",
+            tenant_id="tenant-a",
+            news_generation_id="news-a",
+            media_generation_id="media-a",
+            types=["NEWS"],
+            formats=["ARTICLE", "TWEET"],
+            k=8,
+            exclude_ids=["anchor"],
+        )
+        == []
+    )
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
         "embedding": [0.1, 0.2],
         "space_id": "qwen-v1",
+        "tenant_id": "tenant-a",
+        "news_generation_id": "news-a",
+        "media_generation_id": "media-a",
         "types": ["NEWS"],
         "formats": ["ARTICLE", "TWEET"],
         "k": 8,

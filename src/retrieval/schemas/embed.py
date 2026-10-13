@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from src.common.schemas.artifact_recovery import ArtifactRecoveryCorrelation
 from src.common.schemas.pipeline_repair import PipelineRepairCorrelation
+from src.llm.clients.spend_context import SpendRequest
 
 MAX_EMBED_BATCH = 32
 MAX_EMBED_TEXT_CHARS = 12_000
@@ -23,7 +24,7 @@ class ContentStageCorrelation(BaseModel):
     producer_event_id: str = Field(..., min_length=36, max_length=36)
 
 
-class EmbedRequest(BaseModel):
+class EmbedRequest(SpendRequest):
     texts: list[str] = Field(..., min_length=1, max_length=MAX_EMBED_BATCH)
     content_ids: list[str] | None = Field(default=None, max_length=MAX_EMBED_BATCH)
     # When true, Enrichment runs topic-tag + named-entity extraction on the
@@ -93,11 +94,12 @@ class EmbedResponse(BaseModel):
     # Populated when extract_tags=true for stateless callers. For content
     # write-back requests, tags are persisted asynchronously after the required
     # embedding receipt, so this may remain None even when extraction succeeds.
+    tag_skip_reason: str | None = None
     tags: list[str] | None = None
     entities: dict[str, list[str]] | None = None
 
 
-class EmbedQueryRequest(BaseModel):
+class EmbedQueryRequest(SpendRequest):
     text: str = Field(..., min_length=1, max_length=MAX_EMBED_TEXT_CHARS)
 
 

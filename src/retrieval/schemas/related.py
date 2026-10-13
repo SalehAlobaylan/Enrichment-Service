@@ -1,22 +1,23 @@
 """Schemas for POST /v1/related."""
+
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from src.llm.clients.spend_context import SpendRequest
 
 MAX_RELATED_TEXT_CHARS = 12_000
 MAX_RELATED_EXCLUSIONS = 200
 MAX_CONTENT_ID_CHARS = 128
 
 
-class RelatedRequest(BaseModel):
+class RelatedRequest(SpendRequest):
     """Either `content_id` (look up stored embeddings) OR `text` (embed
     fresh) must be supplied. `content_id` is the common path — News-feed
     slide assembly anchors on a content_item that already has a dense vector.
     """
 
-    content_id: str | None = Field(
-        default=None, min_length=1, max_length=MAX_CONTENT_ID_CHARS
-    )
+    content_id: str | None = Field(default=None, min_length=1, max_length=MAX_CONTENT_ID_CHARS)
     text: str | None = Field(default=None, min_length=1, max_length=MAX_RELATED_TEXT_CHARS)
     # Text-anchored retrieval has no content row from which CMS can derive a
     # tenant and pinned feed view. Content-ID requests may omit these fields;
@@ -25,12 +26,8 @@ class RelatedRequest(BaseModel):
     news_generation_id: str | None = Field(default=None, min_length=1, max_length=64)
     media_generation_id: str | None = Field(default=None, min_length=1, max_length=64)
     # Canonical content-kind filter. NEWS format is selected separately.
-    types: list[Literal["NEWS", "VIDEO", "PODCAST"]] | None = Field(
-        default=None, max_length=3
-    )
-    formats: list[Literal["ARTICLE", "TWEET", "COMMENT"]] | None = Field(
-        default=None, max_length=3
-    )
+    types: list[Literal["NEWS", "VIDEO", "PODCAST"]] | None = Field(default=None, max_length=3)
+    formats: list[Literal["ARTICLE", "TWEET", "COMMENT"]] | None = Field(default=None, max_length=3)
     # Final number of items to return after retrieval and optional rerank.
     # Candidate pool is sized via RELATED_K_DENSE_DEFAULT in config.
     k: int = Field(10, ge=1, le=100)
