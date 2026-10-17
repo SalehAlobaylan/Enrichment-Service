@@ -625,6 +625,9 @@ class LLMClient:
             "occurred_at": datetime.now(UTC).isoformat(),
             "override_id": override_id or "",
             "human_actor_id": self._spend_context.human_actor_id if self._spend_context else "",
+            "economics_attribution_ref": (
+                self._spend_context.economics_attribution_ref if self._spend_context else ""
+            ),
             "spend_class": "llm",
             "operation": operation,
             "provider": provider,
@@ -693,6 +696,7 @@ class LLMClient:
         usage = getattr(response, "usage", None)
         return content or "", {} if usage is None else {
             "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "input_cache_hit_tokens": int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0),
             "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         }
 

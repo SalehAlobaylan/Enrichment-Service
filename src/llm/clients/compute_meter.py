@@ -24,6 +24,7 @@ def emit_compute(
             "occurred_at": datetime.now(UTC).isoformat(),
             "tenant_id": context.tenant_id,
             "human_actor_id": context.human_actor_id or "",
+            "economics_attribution_ref": context.economics_attribution_ref or "",
             "trigger_source": context.trigger_source,
             "system_run_id": context.system_run_id or "",
             "spend_class": spend_class,

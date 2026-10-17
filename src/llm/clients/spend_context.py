@@ -18,6 +18,7 @@ class SpendContext(BaseModel):
     system_run_id: str | None = Field(default=None, max_length=96)
     override_id: str | None = Field(default=None, max_length=36)
     human_actor_id: str | None = Field(default=None, max_length=160)
+    economics_attribution_ref: str | None = Field(default=None, max_length=160)
     serving_exempt: bool = False
     admission: dict[str, Any] | None = None
 

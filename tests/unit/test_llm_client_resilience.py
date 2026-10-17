@@ -201,7 +201,7 @@ async def test_provider_adapters_use_their_own_models_and_usage() -> None:
     )
     assert await client._deepseek_complete("s", "u", 10, 0.1) == (
         "openai",
-        {"input_tokens": 3, "output_tokens": 2},
+        {"input_tokens": 3, "output_tokens": 2, "input_cache_hit_tokens": 0},
     )
     assert await client._anthropic_complete("s", "u", 10, 0.1) == (
         "anthropic",
@@ -306,3 +306,27 @@ def test_cache_key_includes_version_provider_and_model() -> None:
     assert ":v1:" in base
     assert base != LLMCache.make_key("deepseek", "model-a", "s", "u", 10, 0.1)
     assert base != LLMCache.make_key("openai", "model-b", "s", "u", 10, 0.1)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hits", [123, None])
+async def test_deepseek_retains_provider_cached_input_usage(hits) -> None:
+    client = _client()
+    usage = SimpleNamespace(prompt_tokens=1000, completion_tokens=50)
+    if hits is not None:
+        usage.prompt_cache_hit_tokens = hits
+    create = AsyncMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="answer"))],
+        usage=usage,
+    ))
+    client._clients["deepseek"] = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    _, measured = await client._deepseek_complete("system", "user", 100, 0)
+    assert measured == {"input_tokens": 1000, "output_tokens": 50,
+                        "input_cache_hit_tokens": hits or 0}
+    events = []
+    client._spend_meter = SimpleNamespace(enqueue=events.append)
+    client._emit_spend(provider="deepseek", model="deepseek-chat", operation="test",
+                       usage=measured, cached=False, trigger_source="test",
+                       system_run_id=None, tenant_id="test")
+    assert events[0]["units"]["input_cache_hit_tokens"] == (hits or 0)
+    assert events[0]["cached"] is False

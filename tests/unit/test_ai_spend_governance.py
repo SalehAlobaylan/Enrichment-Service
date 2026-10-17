@@ -71,15 +71,24 @@ async def test_paid_stop_cache_hit_empty_response_and_immutable_parallel_context
     client._cache = None
     client._allowance = None
     a = client.for_context(
-        SpendContext(tenant_id="a", trigger_source="studio", system_run_id="run-a")
+        SpendContext(
+            tenant_id="a", trigger_source="studio", system_run_id="run-a",
+            economics_attribution_ref="opaque-a",
+        )
     )
     b = client.for_context(
-        SpendContext(tenant_id="b", trigger_source="preferences", system_run_id="run-b")
+        SpendContext(
+            tenant_id="b", trigger_source="preferences", system_run_id="run-b",
+            economics_attribution_ref="opaque-b",
+        )
     )
     await asyncio.gather(a.complete("s", "a"), b.complete("s", "b"))
     assert {(e["tenant_id"], e["system_run_id"]) for e in events[-2:]} == {
         ("a", "run-a"),
         ("b", "run-b"),
+    }
+    assert {(e["tenant_id"], e["economics_attribution_ref"]) for e in events[-2:]} == {
+        ("a", "opaque-a"), ("b", "opaque-b")
     }
     assert all(not e["estimated"] for e in events[-2:])
     provider.return_value = ("", {"input_tokens": 10, "output_tokens": 0})
