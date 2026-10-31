@@ -97,3 +97,31 @@ def test_operator_response_cannot_invent_action_or_evidence() -> None:
     )
     with pytest.raises(ValueError):
         response.validate_against_request(request)
+
+
+@pytest.mark.parametrize("evidence_ids", [[], ["not-in-packet"], ["ev-1"]])
+def test_operator_conclusion_requires_registered_evidence(evidence_ids: list[str]) -> None:
+    response = OperatorReasonResponse.model_validate(
+        {
+            "schema_version": CONTRACT_VERSION,
+            "language": "en",
+            "task_kind": "explain",
+            "blocks": [
+                {
+                    "kind": "conclusion",
+                    "text": "The latest run needs attention.",
+                    "evidence_ids": evidence_ids,
+                }
+            ],
+            "provider": "test",
+            "model": "test",
+            "tier": "fast",
+            "fallback_used": False,
+            "cache": "disabled",
+        }
+    )
+    if evidence_ids == ["ev-1"]:
+        response.validate_against_request(reason_request())
+    else:
+        with pytest.raises(ValueError):
+            response.validate_against_request(reason_request())

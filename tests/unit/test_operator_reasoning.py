@@ -56,7 +56,10 @@ def reason_body() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_operator_reasoning_disables_cache_and_attaches_observed_provenance() -> None:
+@pytest.mark.parametrize("block_kind", ["fact", "conclusion"])
+async def test_operator_reasoning_disables_cache_and_attaches_observed_provenance(
+    block_kind: str,
+) -> None:
     llm = AsyncMock()
     llm.for_context = Mock(return_value=llm)
     llm.complete_with_provenance.return_value = SimpleNamespace(
@@ -65,7 +68,7 @@ async def test_operator_reasoning_disables_cache_and_attaches_observed_provenanc
                 "language": "en",
                 "task_kind": "explain",
                 "blocks": [
-                    {"kind": "fact", "text": "One item is pending.", "evidence_ids": ["ev-1"]}
+                    {"kind": block_kind, "text": "One item is pending.", "evidence_ids": ["E1"]}
                 ],
                 "primary_recommendation_id": None,
                 "secondary_recommendation_ids": [],
@@ -78,9 +81,14 @@ async def test_operator_reasoning_disables_cache_and_attaches_observed_provenanc
         fallback_used=True,
         cached=False,
     )
-    response = await OperatorReasoningService(llm).reason(
-        OperatorReasonRequest.model_validate(reason_body())
-    )
+    request = OperatorReasonRequest.model_validate(reason_body())
+    response = await OperatorReasoningService(llm).reason(request)
+    assert response.blocks[0].evidence_ids == ["ev-1"]
+    model_prompt = json.loads(llm.complete_with_provenance.await_args.args[1])
+    assert model_prompt["allowed_evidence_ids"] == ["E1"]
+    assert model_prompt["packet"]["evidence"][0]["evidence_id"] == "E1"
+    assert model_prompt["packet"]["facts"][0]["evidence_ids"] == ["E1"]
+    assert request.packet.evidence[0].evidence_id == "ev-1"
     assert response.provider == "test-provider"
     assert response.fallback_used is True
     assert response.cache == "disabled"

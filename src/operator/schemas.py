@@ -173,7 +173,7 @@ class OperatorReasonRequest(BaseModel):
 class OperatorResponseBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["fact", "interpretation", "unknown", "recommendation", "degraded"]
+    kind: Literal["conclusion", "fact", "interpretation", "unknown", "recommendation", "degraded"]
     text: str = Field(min_length=1, max_length=4000)
     evidence_ids: list[str] = Field(default_factory=list, max_length=200)
 
@@ -219,8 +219,8 @@ class OperatorReasonResponse(BaseModel):
     def validate_against_request(self, request: OperatorReasonRequest) -> None:
         evidence_ids = {item.evidence_id for item in request.packet.evidence}
         for block in self.blocks:
-            if block.kind in {"fact", "interpretation"} and not block.evidence_ids:
-                raise ValueError("facts and interpretations require evidence")
+            if block.kind in {"conclusion", "fact", "interpretation"} and not block.evidence_ids:
+                raise ValueError("conclusions, facts and interpretations require evidence")
             if not set(block.evidence_ids).issubset(evidence_ids):
                 raise ValueError("response references unadvertised evidence")
         if (
