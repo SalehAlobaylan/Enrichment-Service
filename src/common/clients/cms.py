@@ -89,6 +89,7 @@ class CMSClient:
         artifact_recovery: dict[str, str] | None = None,
         content_stage: dict[str, str] | None = None,
         pipeline_repair: dict[str, str] | None = None,
+        embedding_campaign: dict[str, int | str] | None = None,
     ) -> dict[str, Any]:
         """Write text embedding to CMS.
 
@@ -118,6 +119,8 @@ class CMSClient:
             payload["artifact_recovery"] = artifact_recovery
         if pipeline_repair:
             payload["pipeline_repair"] = pipeline_repair
+        if embedding_campaign:
+            payload["embedding_campaign"] = embedding_campaign
         if content_stage:
             payload["content_stage"] = content_stage
         return await self._request(

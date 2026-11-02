@@ -11,7 +11,9 @@ Memory footprint:
 - Qwen3-Embedding-0.6B fp32: ~2.4 GB loaded; fp16 (GPU only) ~1.2 GB
 - CPU cold start: ~20-40s
 """
-import os
+
+import re
+from pathlib import Path
 
 from src.common.spaceid import (
     RECIPE_CONTENT_TEXT,
@@ -23,32 +25,33 @@ from src.common.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def _resolve_hf_revision(model_name: str, cache_folder: str) -> str:
-    """Best-effort immutable commit digest for a locally-cached HF model.
+def _resolve_hf_revision(model_name: str, cache_folder: str, revision: str = "") -> str:
+    """Resolve this exact selector to a snapshot, then load only that commit.
 
-    The HF hub cache stores each model under
-    <cache>/models--<org>--<name>/refs/<branch>, whose content is the resolved
-    commit hash of the downloaded snapshot. That hash is immutable even though
-    the branch label ("main") is not. Returns "" when it cannot be resolved —
-    the caller then reports the space as lifecycle-not-ready rather than hashing
-    a mutable label into a false-stable identity.
+    Reading an arbitrary cache ref after loading cannot prove which weights were
+    loaded. The config download resolves the selected branch/tag before loading;
+    its immutable snapshot commit is passed to SentenceTransformer as well.
+    Local/custom artifacts without this evidence remain lifecycle-not-ready.
     """
-    org_name = model_name.replace("/", "--")
-    for base in (cache_folder, os.path.expanduser("~/.cache/huggingface/hub")):
-        refs_dir = os.path.join(base, f"models--{org_name}", "refs")
-        if not os.path.isdir(refs_dir):
-            continue
-        for branch in ("main", *sorted(os.listdir(refs_dir))):
-            ref_path = os.path.join(refs_dir, branch)
-            if os.path.isfile(ref_path):
-                try:
-                    with open(ref_path, encoding="utf-8") as fh:
-                        rev = fh.read().strip()
-                    if rev:
-                        return rev
-                except OSError:
-                    continue
+    from huggingface_hub import hf_hub_download
+
+    repo = model_name if "/" in model_name else f"sentence-transformers/{model_name}"
+    try:
+        config_path = Path(
+            hf_hub_download(
+                repo,
+                "config.json",
+                cache_dir=cache_folder,
+                revision=revision or None,
+            )
+        )
+    except (OSError, ValueError):
+        return ""
+    for parent in config_path.parents:
+        if parent.parent.name == "snapshots" and re.fullmatch(r"[0-9a-f]{40}", parent.name):
+            return parent.name
     return ""
+
 
 # Qwen3-Embedding-0.6B handles up to 32k tokens — far beyond any Wahb content
 # item. The cap is a defensive char-truncation against malformed input.
@@ -66,9 +69,8 @@ class EmbedderWrapper:
         self._model_name = model_name
         self._cache_folder = cache_folder
         self._use_fp16 = use_fp16
-        # Explicit revision override (boot-time model config). When empty we
-        # auto-resolve from the local HF snapshot cache after load().
-        self._revision = revision.strip()
+        self._revision_selector = revision.strip()
+        self._revision = ""
         self._model = None
         self._dimensions: int = 0
 
@@ -132,10 +134,15 @@ class EmbedderWrapper:
             model_name=self._model_name,
             backend="SentenceTransformer",
         )
+        resolved_revision = _resolve_hf_revision(
+            self._model_name,
+            self._cache_folder,
+            self._revision_selector,
+        )
         self._model = SentenceTransformer(
             self._model_name,
             cache_folder=self._cache_folder,
-            revision=self._revision or None,
+            revision=resolved_revision or self._revision_selector or None,
         )
         # fp16 only helps on GPU; PyTorch CPU lacks half-precision kernels for
         # many ops, so keep fp32 on CPU (Cranl is CPU-only).
@@ -151,13 +158,7 @@ class EmbedderWrapper:
             convert_to_numpy=True,
         )
         self._dimensions = len(probe[0])
-        # Resolve the immutable revision if the operator did not pin one. An
-        # unresolved revision leaves the vector space lifecycle-not-ready (its
-        # space_id is ""), which the audit surfaces rather than hiding.
-        if not self._revision:
-            self._revision = _resolve_hf_revision(
-                self._model_name, self._cache_folder
-            )
+        self._revision = resolved_revision
         logger.info(
             "embedder_loaded",
             model_name=self._model_name,

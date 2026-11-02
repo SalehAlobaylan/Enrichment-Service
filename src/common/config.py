@@ -36,12 +36,10 @@ class Settings(BaseSettings):
     # dense, dense-only (no sparse). Replaced BGE-M3 — better Arabic retrieval
     # in practice and a single, lighter model load.
     EMBEDDING_MODEL: str = "Qwen/Qwen3-Embedding-0.6B"
-    # Immutable artifact revision (commit digest) the weights resolve to. This is
-    # boot-time MODEL configuration (like the model name itself) per Config
-    # Discipline — NOT an admin tuning knob. Leave "" to auto-resolve from the
-    # local HF snapshot cache at load; a bare branch label ("main") is not a
-    # revision and leaves the vector space unresolved (lifecycle-not-ready) so no
-    # write is stamped with a false-stable identity.
+    # Boot-time artifact selector, not an admin tuning knob. A branch/tag (or
+    # the default when empty) resolves to an immutable snapshot before loading.
+    # Unproven artifacts remain lifecycle-not-ready; selector labels are never
+    # used as vector-space identities.
     EMBEDDING_MODEL_REVISION: str = ""
     MODELS_DIR: str = "./models"
 

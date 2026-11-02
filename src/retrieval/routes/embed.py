@@ -63,6 +63,7 @@ async def embed(body: EmbedRequest, request: Request) -> EmbedResponse:
                     if body.pipeline_repair
                     else None,
                     content_stage=body.content_stage.model_dump() if body.content_stage else None,
+                    embedding_campaign=body.embedding_campaign,
                 )
     except (EmbeddingError, WorkloadOverloadedError):
         raise

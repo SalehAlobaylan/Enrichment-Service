@@ -41,6 +41,7 @@ class EmbedRequest(SpendRequest):
     pipeline_repair: PipelineRepairCorrelation | None = None
     lane: Literal["news", "pods"] | None = None
     content_stage: ContentStageCorrelation | None = None
+    embedding_campaign: dict[str, int | str] | None = None
 
     @model_validator(mode="after")
     def _validate_batch(self) -> "EmbedRequest":
@@ -73,6 +74,11 @@ class EmbedRequest(SpendRequest):
             self.artifact_recovery is not None or self.pipeline_repair is not None
         ):
             raise ValueError("normal stage, recovery, and repair correlations are exclusive")
+        if self.embedding_campaign is not None:
+            if self.content_ids is None or len(self.content_ids) != 1:
+                raise ValueError("embedding campaign requires exactly one content_id")
+            if self.content_stage or self.artifact_recovery or self.pipeline_repair:
+                raise ValueError("embedding campaign and other write correlations are exclusive")
         return self
 
 

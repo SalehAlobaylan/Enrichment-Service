@@ -74,6 +74,7 @@ class EmbeddingService:
         artifact_recovery: dict[str, str] | None = None,
         pipeline_repair: dict[str, str] | None = None,
         content_stage: dict[str, str] | None = None,
+        embedding_campaign: dict[str, int | str] | None = None,
     ) -> EmbedResponse:
         # Run embedding compute and tag-extraction concurrently when tagging
         # is requested — embedder is CPU, tagging is network-bound on the LLM.
@@ -116,6 +117,7 @@ class EmbeddingService:
                     artifact_recovery=artifact_recovery,
                     pipeline_repair=pipeline_repair,
                     content_stage=content_stage,
+                    **({"embedding_campaign": embedding_campaign} if embedding_campaign else {}),
                 )
             except BaseException:
                 if tags_task is not None:
@@ -223,6 +225,7 @@ class EmbeddingService:
         artifact_recovery: dict[str, str] | None = None,
         pipeline_repair: dict[str, str] | None = None,
         content_stage: dict[str, str] | None = None,
+        embedding_campaign: dict[str, int | str] | None = None,
     ) -> tuple[str, str | None]:
         """Write each (content_id, vector, [sparse]) to CMS.
 
@@ -271,6 +274,7 @@ class EmbeddingService:
                         artifact_recovery=artifact_recovery,
                         pipeline_repair=pipeline_repair,
                         content_stage=content_stage,
+                        **({"embedding_campaign": embedding_campaign} if embedding_campaign else {}),
                     )
                 logger.info(
                     "embedding_writeback_complete",

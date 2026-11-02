@@ -22,7 +22,7 @@ import json
 
 # Producer-recipe version constants owned by this service's writers. These MUST
 # match the Go constants in Content-Management-System/src/spaceid/recipes.go.
-RECIPE_CONTENT_TEXT = "content-title-excerpt-body:v1"
+RECIPE_CONTENT_TEXT = "content-title-transcript-body-excerpt:v2"
 
 
 def _canonical(obj: dict) -> bytes:
